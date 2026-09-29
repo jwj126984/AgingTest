@@ -60,10 +60,13 @@ namespace AgingTest.Models
         public bool TermResistorOn { get; set; }
 
         /// <summary>是否开启只听模式（只读不发送报文）</summary>
-        public bool ListenOnly { get; set; }
+        public bool ListenOnly { get; set; }=false;
         #endregion
     }
     #endregion
+
+
+
 
     #region GJDA电子负载实体
     /// <summary>GJDA‑100‑32电子负载设备实体，单台设备包含32路通道</summary>

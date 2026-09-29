@@ -1,13 +1,17 @@
+using AgingTest.Models;
+using demo;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
-using AgingTest.Models;
 
 namespace AgingTest
 {
@@ -32,6 +36,45 @@ namespace AgingTest
         private WorkStation? _pendingStation;   // 已扫描工位码、等待产品码的工位
         private readonly UserInfo _currentUser;
 
+        private const int MaxChannel = 8;
+        // 管理最多6台NetCAN‑800H运行时句柄集合
+        private readonly List<NetCanRuntimeDevice> _runtimeDeviceList = new List<NetCanRuntimeDevice>();
+
+        private volatile bool _recvRunning = false;
+        private Thread? _recvThread;
+
+        private static string HexString(byte[] data) => string.Join(" ", data.Select(b => b.ToString("X2")));
+
+
+        /// <summary>单台NetCAN800H设备运行时状态（仅内存，不写入JSON）</summary>
+        public class NetCanRuntimeDevice
+        {
+            /// <summary>配置对应的CanIndex 1~6</summary>
+            public int CanIndex { get; set; }
+
+            /// <summary>设备顶层句柄 OpenDevice返回</summary>
+            [System.Text.Json.Serialization.JsonIgnore]
+            public IntPtr DeviceHandle { get; set; } = IntPtr.Zero;
+
+            /// <summary>该设备下8路通道句柄 ch0‑ch7</summary>
+            [System.Text.Json.Serialization.JsonIgnore]
+            public IntPtr[] ChannelHandles { get; set; }
+
+            /// <summary>对应通道是否已经StartCAN启动</summary>
+            [System.Text.Json.Serialization.JsonIgnore]
+            public bool[] ChannelStarted { get; set; }
+
+            public NetCanRuntimeDevice()
+            {
+                ChannelHandles = new IntPtr[8];
+                ChannelStarted = new bool[8];
+            }
+        }
+
+
+
+        private static readonly string ConfigFilePath = Path.Combine(Environment.CurrentDirectory, "Config.json");
+        private static readonly JsonSerializerOptions _jsonOpt = new JsonSerializerOptions { WriteIndented = true };
         public MainWindow(UserInfo user)
         {
             InitializeComponent();
@@ -49,7 +92,262 @@ namespace AgingTest
 
             ScanInput.Focus();
             AddLog($"系统就绪（当前用户：{user.RoleName}），请先扫描【工位码】绑定工位（先扫工位码，再扫产品码）");
+            ReadFullConfig();
         }
+
+
+        public void ReadFullConfig()
+        {
+            ///can卡连接
+            {
+                if (!File.Exists(ConfigFilePath))
+                {
+                    AddLog("Config.json配置文件不存在");
+                    return;
+                }
+
+                List<CanCardItem>? canCardItemList = null;
+                try
+                {
+                    string jsonText = File.ReadAllText(ConfigFilePath);
+                    var cfg = JsonSerializer.Deserialize<Config>(jsonText, _jsonOpt);
+                    canCardItemList = cfg?.CanCardList;
+                }
+                catch (Exception ex)
+                {
+                    AddLog($"读取JSON配置异常：{ex.Message}");
+                    return;
+                }
+
+                if (canCardItemList == null || canCardItemList.Count == 0)
+                {
+                    AddLog("JSON中没有CAN卡配置");
+                    return;
+                }
+
+                try
+                {
+                    // 遍历每一张CAN卡配置（CanIndex 1~6）
+                    foreach (var card in canCardItemList)
+                    {
+                        try
+                        {
+                            if (string.IsNullOrWhiteSpace(card.IpAddress))
+                            {
+                                AddLog($"【CAN{card.CanIndex}】IP配置为空，终止全部CAN初始化！");
+                                return; // IP为空，直接停止全部后续步骤
+                            }
+
+                            // 检查：该设备是否已经存在运行实例，避免重复打开
+                            var existRuntime = _runtimeDeviceList.FirstOrDefault(d => d.CanIndex == card.CanIndex);
+                            if (existRuntime != null && existRuntime.DeviceHandle != IntPtr.Zero)
+                            {
+                                AddLog($"【CAN{card.CanIndex}】设备已经打开，终止全部CAN初始化！");
+                                return;
+                            }
+
+                            // 创建运行时状态对象
+                            var runtimeDev = new NetCanRuntimeDevice
+                            {
+                                CanIndex = card.CanIndex
+                            };
+
+                            // =========打开NetCAN‑800H设备 =========
+                            uint type = ZlgCan.ZCAN_CANFDNET_800H;
+                            uint devIndex = (uint)(card.CanIndex - 1);
+                            IntPtr dev = ZlgCan.OpenDevice(type, devIndex);
+                            if (dev == IntPtr.Zero)
+                            {
+                                AddLog($"【CAN{card.CanIndex}】打开设备失败 type={type}, devIndex={devIndex}，终止全部CAN初始化！");
+                                return; // ❗打开设备失败，直接停止所有后续
+                            }
+                            runtimeDev.DeviceHandle = dev;
+                            AddLog($"【CAN{card.CanIndex}】打开设备成功 handle=0x{dev.ToInt64():X}");
+
+                            // ========= 8个通道 ch0 ~ ch7 =========
+                            for (int ch = 0; ch < 8; ch++)
+                            {
+                                try
+                                {
+                                    // 网络参数设置
+                                    string mode = card.WorkMode == 1 ? "1" : "0";
+                                    bool ok = ZlgCan.ZCAN_SetValue(dev, "0/work_mode", mode) == ZlgCan.STATUS_OK;
+
+                                    string workPort = card.RemotePort.ToString();
+                                    if (ok && !string.IsNullOrEmpty(workPort))
+                                    {
+                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/work_port", workPort) == ZlgCan.STATUS_OK;
+                                    }
+
+                                    string ip = card.IpAddress;
+                                    if (ok && !string.IsNullOrEmpty(ip))
+                                    {
+                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/ip", ip) == ZlgCan.STATUS_OK;
+                                    }
+
+                                    string localPort = card.LocalPort.ToString();
+                                    if (ok && !string.IsNullOrEmpty(localPort))
+                                    {
+                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/local_port", localPort) == ZlgCan.STATUS_OK;
+                                    }
+
+                                    AddLog(ok ? $"网络配置下发成功：模式={mode}, IP={ip}, 工作端口={workPort}, 本地端口={localPort}" : $"【CAN{card.CanIndex}】网络配置下发失败！");
+                                    if (!ok)
+                                    {
+                                        AddLog($"【CAN{card.CanIndex}】网络参数设置失败，终止全部CAN初始化！");
+                                        return; // ❗网络配置下发失败，直接终止全部
+                                    }
+
+                                    var chInitCfg = new ZlgCan.ZCAN_CHANNEL_INIT_CONFIG
+                                    {
+                                        can_type = (uint)card.CanFdAcc,
+                                        acc_code = 0,
+                                        acc_mask = 0xFFFFFFFF,
+                                        reserved = 0,
+                                        filter = 0,
+                                        timing0 = 0x00,
+                                        timing1 = 0x1C, // 修改为你的实际波特率定时参数
+                                        mode = card.ListenOnly ? (byte)1 : (byte)0
+                                    };
+
+                                    IntPtr chHandle = ZlgCan.ZCAN_InitCAN(dev, (uint)ch, ref chInitCfg);
+                                    if (chHandle == IntPtr.Zero)
+                                    {
+                                        AddLog($"【CAN{card.CanIndex}】CH{ch} 通道初始化失败 ZCAN_InitCAN，跳过当前通道，继续本卡其它通道");
+                                        return; // 单通道失败：只跳过本通道，**不停止整卡、不停止其它卡**
+                                    }
+                                    runtimeDev.ChannelHandles[ch] = chHandle;
+
+                                    uint startRet = ZlgCan.ZCAN_StartCAN(chHandle);
+                                    if (startRet != ZlgCan.STATUS_OK)
+                                    {
+                                        AddLog($"【CAN{card.CanIndex}】CH{ch} 启动失败 ret={startRet}，跳过当前通道，继续本卡其它通道");
+                                        return; // 单通道启动失败，仅跳过该通道
+                                    }
+                                    runtimeDev.ChannelStarted[ch] = true;
+                                    AddLog($"【CAN{card.CanIndex}】CH{ch} 初始化并启动成功 can_type={(card.CanFdAcc == 1 ? "CANFD" : "CAN")}");
+
+                                    Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
+                                }
+                                catch (Exception chEx)
+                                {
+                                    AddLog($"【CAN{card.CanIndex}】CH{ch} 通道异常：{chEx.Message}，跳过该通道");
+                                    return; // 单个通道异常，继续处理同卡其它通道
+                                }
+                            }
+
+                            // 把本台设备加入运行集合
+                            _runtimeDeviceList.Add(runtimeDev);
+
+                            Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
+                        }
+                        catch (Exception cardEx)
+                        {
+                            AddLog($"【CAN{card.CanIndex}】设备发生严重异常：{cardEx.Message} → 停止所有CAN卡初始化流程");
+                            return; // ❗整卡出现异常，直接停止全部后续
+                        }
+                    }
+
+                    // 全部设备处理完成，只启动一次接收线程
+                    if (!_recvRunning)
+                    {
+                        StartReceiveThread();
+                        AddLog("接收线程已启动");
+                    }
+                    AddLog("====全部CAN卡批量打开流程执行完毕====");
+                }
+                catch (Exception ex)
+                {
+                    AddLog($"批量打开CAN整体流程异常：{ex.Message}");
+                    return;
+                }
+            }
+            //电子负载连接
+            { 
+            }
+        }
+
+
+
+
+
+
+        private void StartReceiveThread()
+        {
+            if (_recvRunning) return;
+            _recvRunning = true;
+            _recvThread = new Thread(ReceiveLoop) { IsBackground = true };
+            _recvThread.Start();
+        }
+
+
+        private void ReceiveLoop()
+        {
+            var rxCan = new ZlgCan.ZCAN_Receive_Data[256];
+            var rxFd = new ZlgCan.ZCAN_Receive_Data[256];
+            int canSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
+            int fdSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
+            IntPtr ptrCan = Marshal.AllocHGlobal(canSize * rxCan.Length);
+            IntPtr ptrFd = Marshal.AllocHGlobal(fdSize * rxFd.Length);
+            try
+            {
+                while (_recvRunning)
+                {
+                    bool anyStarted = false;
+                    // 遍历全部CAN设备（6台800H）
+                    foreach (var dev in _runtimeDeviceList)
+                    {
+                        // 遍历该设备8个通道 ch0~ch7
+                        for (int ch = 0; ch < MaxChannel; ch++)
+                        {
+                            // 替换原来的 !_started[ch]
+                            if (!dev.ChannelStarted[ch])
+                                continue;
+
+                            anyStarted = true;
+                            IntPtr h = dev.ChannelHandles[ch];
+                            try
+                            {
+                                uint cnt = ZlgCan.ZCAN_GetReceiveNum(h, 0);
+                                while (_recvRunning && cnt > 0)
+                                {
+                                    uint r = ZlgCan.ZCAN_Receive(h, ptrCan, (uint)Math.Min(cnt, 256), 10);
+                                    if (r == 0) break;
+                                    for (uint k = 0; k < r; k++)
+                                    {
+                                        // 从非托管内存拷贝报文到 rxCan 数组
+                                        IntPtr p = ptrCan + (int)k * canSize;
+                                        var frame = Marshal.PtrToStructure<ZlgCan.ZCAN_Receive_Data>(p);
+
+                                        // ========== 这里写你的报文解析业务 ==========
+                                        // 标记来源：dev.CanIndex(设备编号), ch(通道号)
+                                        // AddLog($"CAN{dev.CanIndex} CH{ch} 收到报文 ID:{frame.id}");
+                                    }
+                                    cnt -= r;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                AddLog($"【CAN{dev.CanIndex} CH{ch}】接收异常：{ex.Message}");
+                            }
+                        }
+                    }
+                    if (!anyStarted)
+                    {
+                        Thread.Sleep(50); // 没有通道启用，降低循环频率减少CPU占用
+                    }
+                }
+            }
+            finally
+            {
+                // 释放非托管内存，防止内存泄漏
+                Marshal.FreeHGlobal(ptrCan);
+                Marshal.FreeHGlobal(ptrFd);
+            }
+        }
+
+
+
 
         // ==================== 权限管理（三级权限） ====================
 

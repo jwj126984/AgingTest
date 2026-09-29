@@ -9,22 +9,9 @@
         <StackPanel Margin="12">
             <TextBlock Text="ZLG CAN-800H 12通道管理" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
 
-            <!-- ✅ 移到前面：标题下方，卡片列表之前 -->
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,0,8,12">
-                <Button x:Name="BtnBatchResetIp"
-                    Content="IP重置(10~21)"
-                    Width="160"
-                    Height="30"
-                    Padding="6,2"
-                    Background="#007ACC"
-                    Foreground="White"
-                    FontSize="12"
-                    Click="BtnBatchResetIp_Click"/>
-            </StackPanel>
-
+         
             <WrapPanel x:Name="WrapCanCards" Orientation="Horizontal"/>
 
-            <!-- 后面不要再放按钮了 -->
         </StackPanel>
     </ScrollViewer>
 

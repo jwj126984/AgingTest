@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using AgingTest.Models;
 
 namespace AgingTest.Views
 {
@@ -23,7 +24,6 @@ namespace AgingTest.Views
         {
             9600,19200,38400,57600,115200
         };
-
         public UC_LoadDevice()
         {
             InitializeComponent();
@@ -39,22 +39,68 @@ namespace AgingTest.Views
                 _devTimers[i].Tick += (s, e) => AutoReadData(devId);
             }
         }
-
         #region Json 读写
         private void SaveConfigToJsonFile()
         {
             var opt = new JsonSerializerOptions { WriteIndented = true };
-            string json = JsonSerializer.Serialize(_globalCfg, opt);
-            File.WriteAllText("gjda_config.json", json);
+            string filePath = "Config.json";
+
+            // 1.读取完整旧根配置，保留CanCardList不丢失
+            Config rootCfg;
+            if (File.Exists(filePath))
+            {
+                string oldJson = File.ReadAllText(filePath);
+                rootCfg = JsonSerializer.Deserialize<Config>(oldJson, opt) ?? new Config();
+            }
+            else
+            {
+                rootCfg = new Config();
+            }
+
+            // 2.把内存中 _globalCfg(GlobalDeviceConfig) 映射为 Models.GjdaDeviceItem 集合
+            var gjdaList = new List<AgingTest.Models.GjdaDeviceItem>();
+            foreach (var d in _globalCfg.Devices)
+            {
+                var gjdaDev = new AgingTest.Models.GjdaDeviceItem
+                {
+                    DevId = d.DevId,
+                    ComPort = d.ComPort,
+                    BaudRate = d.BaudRate,
+                    SlaveAddr = d.SlaveAddr
+                };
+                foreach (var ch in d.Channels)
+                {
+                    gjdaDev.Channels.Add(new AgingTest.Models.GjdaChannelItem
+                    {
+                        ChNo = ch.ChNo,
+                        Mode = ch.Mode,
+                        VonVolt = ch.VonVolt,
+                        SetValue = ch.SetValue,
+                        ExtraParam = ch.ExtraParam
+                    });
+                }
+                gjdaList.Add(gjdaDev);
+            }
+            // 3.只替换GjdaDevices，CanCardList保持原样
+            rootCfg.GjdaDevices = gjdaList;
+
+            // 4.写回完整Config.json
+            string json = JsonSerializer.Serialize(rootCfg, opt);
+            File.WriteAllText(filePath, json);
         }
+
         private GlobalDeviceConfig LoadConfigFromJsonFile()
         {
-            if (!File.Exists("gjda_config.json"))
+            var opt = new JsonSerializerOptions { WriteIndented = true };
+            string filePath = "Config.json";
+
+            // 文件不存在：初始化内存GlobalDeviceConfig，同时生成Config.json模板
+            if (!File.Exists(filePath))
             {
-                var newCfg = new GlobalDeviceConfig();
+                var newGlobalDevCfg = new GlobalDeviceConfig();
                 for (int i = 1; i <= 4; i++)
                 {
-                    newCfg.Devices.Add(new DeviceConfig
+                    newGlobalDevCfg.Devices.Add(new DeviceConfig
                     {
                         DevId = i,
                         ComPort = "COM1",
@@ -63,11 +109,56 @@ namespace AgingTest.Views
                         Channels = new List<ChannelConfig>()
                     });
                 }
-                return newCfg;
+
+                // 生成磁盘上Config.json（CanCardList为空）
+                Config rootNew = new Config();
+                foreach (var d in newGlobalDevCfg.Devices)
+                {
+                    var gjdaDev = new AgingTest.Models.GjdaDeviceItem
+                    {
+                        DevId = d.DevId,
+                        ComPort = d.ComPort,
+                        BaudRate = d.BaudRate,
+                        SlaveAddr = d.SlaveAddr
+                    };
+                    rootNew.GjdaDevices.Add(gjdaDev);
+                }
+                string jsonInit = JsonSerializer.Serialize(rootNew, opt);
+                File.WriteAllText(filePath, jsonInit);
+
+                return newGlobalDevCfg;
             }
-            string jsonTxt = File.ReadAllText("gjda_config.json");
-            return JsonSerializer.Deserialize<GlobalDeviceConfig>(jsonTxt) ?? new GlobalDeviceConfig();
+
+            // 文件存在：读取根Config，把GjdaDevices映射回内存GlobalDeviceConfig
+            string jsonTxt = File.ReadAllText(filePath);
+            var rootCfg = JsonSerializer.Deserialize<Config>(jsonTxt, opt) ?? new Config();
+
+            var resultGlobal = new GlobalDeviceConfig();
+            foreach (var gjda in rootCfg.GjdaDevices)
+            {
+                var devConf = new DeviceConfig
+                {
+                    DevId = gjda.DevId,
+                    ComPort = gjda.ComPort,
+                    BaudRate = gjda.BaudRate,
+                    SlaveAddr = gjda.SlaveAddr
+                };
+                foreach (var ch in gjda.Channels)
+                {
+                    devConf.Channels.Add(new ChannelConfig
+                    {
+                        ChNo = ch.ChNo,
+                        Mode = ch.Mode,
+                        VonVolt = ch.VonVolt,
+                        SetValue = ch.SetValue,
+                        ExtraParam = ch.ExtraParam
+                    });
+                }
+                resultGlobal.Devices.Add(devConf);
+            }
+            return resultGlobal;
         }
+
         private void SaveDeviceSerialConfig(int devId, string com, int baud, byte slaveAddr)
         {
             var devCfg = _globalCfg.Devices.FirstOrDefault(d => d.DevId == devId);
@@ -93,7 +184,6 @@ namespace AgingTest.Views
             SaveConfigToJsonFile();
         }
         #endregion
-
         private void InitDevices()
         {
             _devList.Clear();
@@ -102,14 +192,13 @@ namespace AgingTest.Views
                 _devList.Add(new GjdaDeviceItem
                 {
                     DevId = cfg.DevId,
-                    PortName = cfg.ComPort,
+                    ComPort = cfg.ComPort,
                     BaudRate = cfg.BaudRate,
                     SlaveAddr = cfg.SlaveAddr,
                     IsConnected = false
                 });
             }
         }
-
         private int GetDeviceIdBySender(object sender)
         {
             if (sender is Button btn && btn.Name.Length >= 6)
@@ -120,7 +209,6 @@ namespace AgingTest.Views
             }
             return -1;
         }
-
         private void RefreshComList()
         {
             ComPortList.Clear();
@@ -131,13 +219,11 @@ namespace AgingTest.Views
             cbbCom2.ItemsSource = ComPortList;
             cbbCom3.ItemsSource = ComPortList;
             cbbCom4.ItemsSource = ComPortList;
-
             cbbBaud1.ItemsSource = BaudList;
             cbbBaud2.ItemsSource = BaudList;
             cbbBaud3.ItemsSource = BaudList;
             cbbBaud4.ItemsSource = BaudList;
         }
-
         #region 设备连接断开
         private void BtnDevConnect_Click(object sender, RoutedEventArgs e)
         {
@@ -170,10 +256,10 @@ namespace AgingTest.Views
             try
             {
                 dev.DeviceHandle = new GJDA10032();
-                dev.PortName = comPort;
+                dev.ComPort = comPort;
                 dev.SlaveAddr = slaveAddr;
                 dev.BaudRate = baudRate;
-                dev.DeviceHandle.Open(dev.PortName, dev.BaudRate, dev.SlaveAddr);
+                dev.DeviceHandle.Open(dev.ComPort, dev.BaudRate, dev.SlaveAddr);
                 dev.DeviceHandle.DeviceAddress = dev.SlaveAddr;
                 bool connOk = dev.DeviceHandle.CheckConnect();
                 if (!connOk)
@@ -227,7 +313,6 @@ namespace AgingTest.Views
             MessageBox.Show($"设备{devId}已断开，停止自动采集");
         }
         #endregion
-
         #region 辅助读取UI控件值
         private string GetSelectedCom(int devId)
         {
@@ -255,7 +340,6 @@ namespace AgingTest.Views
             return 9600;
         }
         #endregion
-
         #region 辅助获取对象
         private GjdaDeviceItem GetDevById(int devId)
         {
@@ -272,7 +356,6 @@ namespace AgingTest.Views
             return this.FindName($"WrapDev{devId}Data") as WrapPanel;
         }
         #endregion
-
         private void LoadConfigToUI()
         {
             foreach (var devCfg in _globalCfg.Devices)
@@ -302,7 +385,6 @@ namespace AgingTest.Views
                 }
             }
         }
-
         private void AutoReadData(int devId)
         {
             var dev = GetDevById(devId);
@@ -344,7 +426,6 @@ namespace AgingTest.Views
                 MessageBox.Show($"设备{devId}自动采集失败：{ex.Message}\n已停止自动刷新");
             }
         }
-
         private void BtnTestAddr_Click(object sender, RoutedEventArgs e)
         {
             int devId = GetDeviceIdBySender(sender);
@@ -390,7 +471,6 @@ namespace AgingTest.Views
                 gjda.Close();
             }
         }
-
         private void BtnWriteParam_Click(object sender, RoutedEventArgs e)
         {
             int devId = GetDeviceIdBySender(sender);
@@ -440,7 +520,6 @@ namespace AgingTest.Views
                 MessageBox.Show($"设备{devId}下发参数失败：{ex.Message}");
             }
         }
-
         private void BtnReadData_Click(object sender, RoutedEventArgs e)
         {
             int devId = GetDeviceIdBySender(sender);
@@ -475,7 +554,6 @@ namespace AgingTest.Views
                 MessageBox.Show($"设备{devId}读取实时数据失败：{ex.Message}");
             }
         }
-
         private void Tile_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             if (sender is Border bd && bd.Tag is Tuple<int, int> tagData)
@@ -578,7 +656,6 @@ namespace AgingTest.Views
                 }
             }
         }
-
         private void RenderDeviceChannels(int devId)
         {
             var wrapPanel = GetDevWrapPanel(devId);
@@ -589,10 +666,10 @@ namespace AgingTest.Views
             for (int ch = 1; ch <= 32; ch++)
             {
                 var savedCh = devConfig.Channels.FirstOrDefault(c => c.ChNo == ch);
-                byte mode = savedCh?.Mode ?? 0;
+                int mode = savedCh?.Mode ?? 0;
                 double vonVolt = savedCh?.VonVolt ?? 0;
                 double setVal = savedCh?.SetValue ?? 0;
-                byte extra = savedCh?.ExtraParam ?? 0;
+                int extra = savedCh?.ExtraParam ?? 0;
                 var border = new Border
                 {
                     Style = FindResource("DataTile") as Style,
@@ -609,7 +686,6 @@ namespace AgingTest.Views
                 wrapPanel.Children.Add(border);
             }
         }
-
         private void BtnAllChannelOn_Click(object sender, RoutedEventArgs e)
         {
             int devId = GetDeviceIdBySender(sender);
@@ -631,7 +707,6 @@ namespace AgingTest.Views
                 MessageBox.Show($"开启失败：{ex.Message}");
             }
         }
-
         private void BtnAllChannelOff_Click(object sender, RoutedEventArgs e)
         {
             int devId = GetDeviceIdBySender(sender);
@@ -653,14 +728,11 @@ namespace AgingTest.Views
                 MessageBox.Show($"关闭失败：{ex.Message}");
             }
         }
-
-
         // 页面切换离开时触发
         private void UserControl_Unloaded(object sender, RoutedEventArgs e)
         {
             DisconnectAllDevice();
         }
-
         /// <summary>
         /// 全部4台电子负载统一断开
         /// </summary>
@@ -702,9 +774,6 @@ namespace AgingTest.Views
                 TbDev4Status.Foreground = Brushes.Red;
             }
         }
-
-
-
         //protected override void OnUnloaded(RoutedEventArgs e)
         //{
         //    for (int i = 1; i <= 4; i++)
@@ -723,12 +792,11 @@ namespace AgingTest.Views
         //    }
         //    base.OnUnloaded(e);
         //}
-
         #region 实体类
         public class GjdaDeviceItem
         {
             public int DevId { get; set; }
-            public string? PortName { get; set; }
+            public string? ComPort { get; set; }
             public int BaudRate { get; set; }
             public byte SlaveAddr { get; set; }
             public bool IsConnected { get; set; }
@@ -737,7 +805,7 @@ namespace AgingTest.Views
         public class ChannelConfig
         {
             public int ChNo { get; set; }
-            public byte Mode { get; set; }
+            public int Mode { get; set; }
             public double VonVolt { get; set; }
             public double SetValue { get; set; }
             public byte ExtraParam { get; set; }

@@ -1,671 +1,91 @@
-﻿using Common.SerialportHelper;
+﻿using AgingTest.Models;
+using Common.SerialportHelper;
 using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.IO;
-using System.IO.Ports;
 using System.Linq;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
-using AgingTest.Models;
 
 namespace AgingTest.Views
 {
+    /// <summary>
+    /// 多通道电子负载（GJDA-100-32 ×4）控制页。
+    /// 展示 32 通道实时采集数据并支持点击通道块设置负载参数。
+    /// 通讯连接与串口/波特率/从站参数由 DeviceComm 统一管理（通讯设置窗口/主界面操作），
+    /// 本页仅读取 DeviceComm 的连接状态与设备句柄。
+    /// </summary>
     public partial class UC_LoadDevice : UserControl
     {
-        private readonly List<GjdaDeviceItem> _devList = new();
-        private GlobalDeviceConfig _globalCfg;
         private readonly DispatcherTimer[] _devTimers = new DispatcherTimer[5];
-        public ObservableCollection<string> ComPortList { get; set; } = new();
-        public ObservableCollection<int> BaudList { get; set; } = new()
-        {
-            9600,19200,38400,57600,115200
-        };
+
         public UC_LoadDevice()
         {
             InitializeComponent();
-            _globalCfg = LoadConfigFromJsonFile();
-            InitDevices();
-            LoadConfigToUI();
-            RefreshComList();
-            for (int i = 1; i <= 4; i++)
+            DeviceComm.LoadSettings();
+            DeviceComm.EnsureLoads();
+            DeviceComm.StateChanged += DeviceComm_StateChanged;
+            for (int i = 1; i <= DeviceComm.LoadCount; i++)
             {
-                _devTimers[i] = new DispatcherTimer();
-                _devTimers[i].Interval = TimeSpan.FromSeconds(5);
+                _devTimers[i] = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
                 int devId = i;
-                _devTimers[i].Tick += (s, e) => AutoReadData(devId);
+                _devTimers[i].Tick += (_, _) => AutoReadData(devId);
             }
+            RefreshStates();
+            RenderAllChannels();
         }
-        #region Json 读写
-        private void SaveConfigToJsonFile()
+
+        private DeviceComm.LoadRuntime? GetRuntime(int devId)
+            => DeviceComm.Loads.FirstOrDefault(x => x.Cfg.DevId == devId);
+
+        private void DeviceComm_StateChanged()
         {
-            var opt = new JsonSerializerOptions { WriteIndented = true };
-            string filePath = "Config.json";
+            if (Dispatcher.CheckAccess()) RefreshStates();
+            else Dispatcher.Invoke(RefreshStates);
+        }
 
-            // 1.读取完整旧根配置，保留CanCardList不丢失
-            Config rootCfg;
-            if (File.Exists(filePath))
+        /// <summary>刷新设备连接状态文字，并启停对应自动采集定时器。</summary>
+        private void RefreshStates()
+        {
+            for (int i = 1; i <= DeviceComm.LoadCount; i++)
             {
-                string oldJson = File.ReadAllText(filePath);
-                rootCfg = JsonSerializer.Deserialize<Config>(oldJson, opt) ?? new Config();
-            }
-            else
-            {
-                rootCfg = new Config();
-            }
-
-            // 2.把内存中 _globalCfg(GlobalDeviceConfig) 映射为 Models.GjdaDeviceItem 集合
-            var gjdaList = new List<AgingTest.Models.GjdaDeviceItem>();
-            foreach (var d in _globalCfg.Devices)
-            {
-                var gjdaDev = new AgingTest.Models.GjdaDeviceItem
+                var rt = GetRuntime(i);
+                bool conn = rt?.Connected == true;
+                var tb = GetDevStatusTb(i);
+                if (tb != null)
                 {
-                    DevId = d.DevId,
-                    ComPort = d.ComPort,
-                    BaudRate = d.BaudRate,
-                    SlaveAddr = d.SlaveAddr
-                };
-                foreach (var ch in d.Channels)
-                {
-                    gjdaDev.Channels.Add(new AgingTest.Models.GjdaChannelItem
-                    {
-                        ChNo = ch.ChNo,
-                        Mode = ch.Mode,
-                        VonVolt = ch.VonVolt,
-                        SetValue = ch.SetValue,
-                        ExtraParam = ch.ExtraParam
-                    });
+                    tb.Text = conn ? $"设备状态：已连接，地址:{rt!.Cfg.SlaveAddr}" : "设备状态：未连接";
+                    tb.Foreground = conn
+                        ? new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45))
+                        : new SolidColorBrush(Color.FromRgb(0xDC, 0x35, 0x45));
                 }
-                gjdaList.Add(gjdaDev);
-            }
-            // 3.只替换GjdaDevices，CanCardList保持原样
-            rootCfg.GjdaDevices = gjdaList;
-
-            // 4.写回完整Config.json
-            string json = JsonSerializer.Serialize(rootCfg, opt);
-            File.WriteAllText(filePath, json);
-        }
-
-        private GlobalDeviceConfig LoadConfigFromJsonFile()
-        {
-            var opt = new JsonSerializerOptions { WriteIndented = true };
-            string filePath = "Config.json";
-
-            // 文件不存在：初始化内存GlobalDeviceConfig，同时生成Config.json模板
-            if (!File.Exists(filePath))
-            {
-                var newGlobalDevCfg = new GlobalDeviceConfig();
-                for (int i = 1; i <= 4; i++)
+                if (conn)
                 {
-                    newGlobalDevCfg.Devices.Add(new DeviceConfig
-                    {
-                        DevId = i,
-                        ComPort = "COM1",
-                        BaudRate = 9600,
-                        SlaveAddr = 1,
-                        Channels = new List<ChannelConfig>()
-                    });
-                }
-
-                // 生成磁盘上Config.json（CanCardList为空）
-                Config rootNew = new Config();
-                foreach (var d in newGlobalDevCfg.Devices)
-                {
-                    var gjdaDev = new AgingTest.Models.GjdaDeviceItem
-                    {
-                        DevId = d.DevId,
-                        ComPort = d.ComPort,
-                        BaudRate = d.BaudRate,
-                        SlaveAddr = d.SlaveAddr
-                    };
-                    rootNew.GjdaDevices.Add(gjdaDev);
-                }
-                string jsonInit = JsonSerializer.Serialize(rootNew, opt);
-                File.WriteAllText(filePath, jsonInit);
-
-                return newGlobalDevCfg;
-            }
-
-            // 文件存在：读取根Config，把GjdaDevices映射回内存GlobalDeviceConfig
-            string jsonTxt = File.ReadAllText(filePath);
-            var rootCfg = JsonSerializer.Deserialize<Config>(jsonTxt, opt) ?? new Config();
-
-            var resultGlobal = new GlobalDeviceConfig();
-            foreach (var gjda in rootCfg.GjdaDevices)
-            {
-                var devConf = new DeviceConfig
-                {
-                    DevId = gjda.DevId,
-                    ComPort = gjda.ComPort,
-                    BaudRate = gjda.BaudRate,
-                    SlaveAddr = gjda.SlaveAddr
-                };
-                foreach (var ch in gjda.Channels)
-                {
-                    devConf.Channels.Add(new ChannelConfig
-                    {
-                        ChNo = ch.ChNo,
-                        Mode = ch.Mode,
-                        VonVolt = ch.VonVolt,
-                        SetValue = ch.SetValue,
-                        ExtraParam = ch.ExtraParam
-                    });
-                }
-                resultGlobal.Devices.Add(devConf);
-            }
-            return resultGlobal;
-        }
-
-        private void SaveDeviceSerialConfig(int devId, string com, int baud, byte slaveAddr)
-        {
-            var devCfg = _globalCfg.Devices.FirstOrDefault(d => d.DevId == devId);
-            if (devCfg == null)
-            {
-                devCfg = new DeviceConfig { DevId = devId };
-                _globalCfg.Devices.Add(devCfg);
-            }
-            devCfg.ComPort = com;
-            devCfg.BaudRate = baud;
-            devCfg.SlaveAddr = slaveAddr;
-            SaveConfigToJsonFile();
-        }
-        private void SaveDeviceChannelConfig(int devId, List<ChannelConfig> chList)
-        {
-            var devCfg = _globalCfg.Devices.FirstOrDefault(d => d.DevId == devId);
-            if (devCfg == null)
-            {
-                devCfg = new DeviceConfig { DevId = devId };
-                _globalCfg.Devices.Add(devCfg);
-            }
-            devCfg.Channels = chList;
-            SaveConfigToJsonFile();
-        }
-        #endregion
-        private void InitDevices()
-        {
-            _devList.Clear();
-            foreach (var cfg in _globalCfg.Devices)
-            {
-                _devList.Add(new GjdaDeviceItem
-                {
-                    DevId = cfg.DevId,
-                    ComPort = cfg.ComPort,
-                    BaudRate = cfg.BaudRate,
-                    SlaveAddr = cfg.SlaveAddr,
-                    IsConnected = false
-                });
-            }
-        }
-        private int GetDeviceIdBySender(object sender)
-        {
-            if (sender is Button btn && btn.Name.Length >= 6)
-            {
-                var idChar = btn.Name.Substring(6, 1);
-                if (int.TryParse(idChar, out int devId))
-                    return devId;
-            }
-            return -1;
-        }
-        private void RefreshComList()
-        {
-            ComPortList.Clear();
-            var realPorts = SerialPort.GetPortNames();
-            foreach (var p in realPorts)
-                ComPortList.Add(p);
-            cbbCom1.ItemsSource = ComPortList;
-            cbbCom2.ItemsSource = ComPortList;
-            cbbCom3.ItemsSource = ComPortList;
-            cbbCom4.ItemsSource = ComPortList;
-            cbbBaud1.ItemsSource = BaudList;
-            cbbBaud2.ItemsSource = BaudList;
-            cbbBaud3.ItemsSource = BaudList;
-            cbbBaud4.ItemsSource = BaudList;
-        }
-        #region 设备连接断开
-        private void BtnDevConnect_Click(object sender, RoutedEventArgs e)
-        {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1)
-            {
-                MessageBox.Show("获取设备编号失败！");
-                return;
-            }
-            string comPort = GetSelectedCom(devId);
-            int baudRate = GetSelectedBaud(devId);
-            TextBox txtSlave = FindName($"TxtDev{devId}_SlaveAddr") as TextBox;
-            if (txtSlave == null)
-            {
-                MessageBox.Show("找不到从站地址输入框");
-                return;
-            }
-            if (!byte.TryParse(txtSlave.Text, out byte slaveAddr))
-            {
-                MessageBox.Show("从站地址必须是数字！");
-                return;
-            }
-            var dev = GetDevById(devId);
-            var tbStatus = GetDevStatusTb(devId);
-            if (dev.IsConnected)
-            {
-                MessageBox.Show($"设备{devId}已经连接");
-                return;
-            }
-            try
-            {
-                dev.DeviceHandle = new GJDA10032();
-                dev.ComPort = comPort;
-                dev.SlaveAddr = slaveAddr;
-                dev.BaudRate = baudRate;
-                dev.DeviceHandle.Open(dev.ComPort, dev.BaudRate, dev.SlaveAddr);
-                dev.DeviceHandle.DeviceAddress = dev.SlaveAddr;
-                bool connOk = dev.DeviceHandle.CheckConnect();
-                if (!connOk)
-                {
-                    dev.DeviceHandle.Close();
-                    dev.DeviceHandle = null;
-                    MessageBox.Show($"设备{devId}通讯检测失败！检查串口、波特率、485接线、从站地址");
-                    return;
-                }
-                dev.IsConnected = true;
-                if (tbStatus != null)
-                {
-                    tbStatus.Text = $"设备状态：已连接，地址:{dev.SlaveAddr}";
-                    tbStatus.Foreground = Brushes.Green;
-                }
-                _devTimers[devId].Start();
-                SaveDeviceSerialConfig(devId, comPort, baudRate, slaveAddr);
-                MessageBox.Show($"设备{devId}连接成功，参数已保存，开始自动采集");
-            }
-            catch (Exception ex)
-            {
-                dev.DeviceHandle?.Close();
-                dev.DeviceHandle = null;
-                MessageBox.Show($"设备{devId}连接异常：{ex.Message}");
-            }
-        }
-        private void BtnDevDisconnect_Click(object sender, RoutedEventArgs e)
-        {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1) return;
-            var dev = GetDevById(devId);
-            var tbStatus = GetDevStatusTb(devId);
-            if (!dev.IsConnected)
-            {
-                MessageBox.Show($"设备{devId}未连接");
-                return;
-            }
-            try
-            {
-                dev.DeviceHandle?.Close();
-            }
-            catch { }
-            dev.DeviceHandle = null;
-            dev.IsConnected = false;
-            _devTimers[devId].Stop();
-            if (tbStatus != null)
-            {
-                tbStatus.Text = "设备状态：未连接";
-                tbStatus.Foreground = Brushes.Red;
-            }
-            MessageBox.Show($"设备{devId}已断开，停止自动采集");
-        }
-        #endregion
-        #region 辅助读取UI控件值
-        private string GetSelectedCom(int devId)
-        {
-            return devId switch
-            {
-                1 => cbbCom1.SelectedItem?.ToString(),
-                2 => cbbCom2.SelectedItem?.ToString(),
-                3 => cbbCom3.SelectedItem?.ToString(),
-                4 => cbbCom4.SelectedItem?.ToString(),
-                _ => null
-            };
-        }
-        private int GetSelectedBaud(int devId)
-        {
-            var cbb = devId switch
-            {
-                1 => cbbBaud1,
-                2 => cbbBaud2,
-                3 => cbbBaud3,
-                4 => cbbBaud4,
-                _ => null
-            };
-            if (cbb != null && int.TryParse(cbb.SelectedItem?.ToString(), out int b))
-                return b;
-            return 9600;
-        }
-        #endregion
-        #region 辅助获取对象
-        private GjdaDeviceItem GetDevById(int devId)
-        {
-            if (devId < 1 || devId > _devList.Count)
-                throw new Exception("设备编号错误");
-            return _devList[devId - 1];
-        }
-        private TextBlock GetDevStatusTb(int devId)
-        {
-            return this.FindName($"TbDev{devId}Status") as TextBlock;
-        }
-        private WrapPanel GetDevWrapPanel(int devId)
-        {
-            return this.FindName($"WrapDev{devId}Data") as WrapPanel;
-        }
-        #endregion
-        private void LoadConfigToUI()
-        {
-            foreach (var devCfg in _globalCfg.Devices)
-            {
-                switch (devCfg.DevId)
-                {
-                    case 1:
-                        cbbCom1.SelectedItem = devCfg.ComPort;
-                        cbbBaud1.SelectedItem = devCfg.BaudRate;
-                        ((TextBox)FindName("TxtDev1_SlaveAddr")).Text = devCfg.SlaveAddr.ToString();
-                        break;
-                    case 2:
-                        cbbCom2.SelectedItem = devCfg.ComPort;
-                        cbbBaud2.SelectedItem = devCfg.BaudRate;
-                        ((TextBox)FindName("TxtDev2_SlaveAddr")).Text = devCfg.SlaveAddr.ToString();
-                        break;
-                    case 3:
-                        cbbCom3.SelectedItem = devCfg.ComPort;
-                        cbbBaud3.SelectedItem = devCfg.BaudRate;
-                        ((TextBox)FindName("TxtDev3_SlaveAddr")).Text = devCfg.SlaveAddr.ToString();
-                        break;
-                    case 4:
-                        cbbCom4.SelectedItem = devCfg.ComPort;
-                        cbbBaud4.SelectedItem = devCfg.BaudRate;
-                        ((TextBox)FindName("TxtDev4_SlaveAddr")).Text = devCfg.SlaveAddr.ToString();
-                        break;
-                }
-            }
-        }
-        private void AutoReadData(int devId)
-        {
-            var dev = GetDevById(devId);
-            var wrapPanel = GetDevWrapPanel(devId);
-            if (wrapPanel == null || !dev.IsConnected || dev.DeviceHandle == null)
-            {
-                _devTimers[devId].Stop();
-                return;
-            }
-            try
-            {
-                var res = dev.DeviceHandle.ReadAll32Channel();
-                wrapPanel.Children.Clear();
-                foreach (var ch in res.Channels)
-                {
-                    var tile = new Border { Style = this.FindResource("DataTile") as Style };
-                    tile.Tag = new Tuple<int, int>(devId, ch.ChNo);
-                    tile.MouseDown += Tile_MouseDown;
-                    var sp = new StackPanel();
-                    sp.Children.Add(new TextBlock { Text = $"CH{ch.ChNo}", FontSize = 11 });
-                    sp.Children.Add(new TextBlock { Text = $"U:{ch.Voltage:F2} V", FontSize = 12 });
-                    sp.Children.Add(new TextBlock { Text = $"I:{ch.Current:F3} A", FontSize = 12 });
-                    tile.Child = sp;
-                    wrapPanel.Children.Add(tile);
-                }
-            }
-            catch (Exception ex)
-            {
-                _devTimers[devId].Stop();
-                dev.IsConnected = false;
-                dev.DeviceHandle?.Close();
-                dev.DeviceHandle = null;
-                var tbStatus = GetDevStatusTb(devId);
-                if (tbStatus != null)
-                {
-                    tbStatus.Text = "设备状态：通信异常";
-                    tbStatus.Foreground = Brushes.Red;
-                }
-                MessageBox.Show($"设备{devId}自动采集失败：{ex.Message}\n已停止自动刷新");
-            }
-        }
-        private void BtnTestAddr_Click(object sender, RoutedEventArgs e)
-        {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1)
-            {
-                MessageBox.Show("获取设备编号失败，无法执行操作！", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            var dev = GetDevById(devId);
-            string comPort = GetSelectedCom(devId);
-            int baud = GetSelectedBaud(devId);
-            if (string.IsNullOrWhiteSpace(comPort))
-            {
-                MessageBox.Show("请先选择串口！");
-                return;
-            }
-            if (!byte.TryParse(((TextBox)FindName($"TxtDev{devId}_SlaveAddr")).Text, out byte slaveAddr))
-            {
-                MessageBox.Show("从站地址格式错误！");
-                return;
-            }
-            var gjda = new GJDA10032();
-            try
-            {
-                gjda.Open(comPort, baud, slaveAddr);
-                gjda.DeviceAddress = slaveAddr;
-                bool ok = gjda.CheckConnect();
-                if (ok)
-                {
-                    MessageBox.Show("✅ 当前串口、波特率、从站地址通信正常！");
+                    if (!_devTimers[i].IsEnabled) _devTimers[i].Start();
                 }
                 else
                 {
-                    MessageBox.Show("❌ 设备无应答，请检查接线与参数");
+                    _devTimers[i].Stop();
                 }
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"通信异常：{ex.Message}");
-            }
-            finally
-            {
-                gjda.Close();
-            }
         }
-        private void BtnWriteParam_Click(object sender, RoutedEventArgs e)
+
+        private void RenderAllChannels()
         {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1) return;
-            var dev = GetDevById(devId);
-            if (!dev.IsConnected || dev.DeviceHandle == null)
-            {
-                MessageBox.Show($"设备{devId}未连接，请先连接");
-                return;
-            }
-            var txtLoad = this.FindName($"TxtDev{devId}LoadVal") as TextBox;
-            var txtExtra = this.FindName($"TxtDev{devId}ExtraVal") as TextBox;
-            string loadVal = txtLoad?.Text ?? "0";
-            string extraVal = txtExtra?.Text ?? "0";
-            try
-            {
-                double current = double.TryParse(loadVal, out double d) ? d : 0.5;
-                byte extra = byte.TryParse(extraVal, out byte exVal) ? exVal : (byte)0;
-                var list16 = new List<GJDA10032.ChSetParam>();
-                for (int i = 0; i < 16; i++)
-                {
-                    list16.Add(new GJDA10032.ChSetParam
-                    {
-                        Mode = 0,
-                        VonVolt = 12.0,
-                        SetValue = current,
-                        ExtraParam = extra
-                    });
-                }
-                var list17_32 = new List<GJDA10032.ChSetParam>();
-                for (int i = 0; i < 16; i++)
-                {
-                    list17_32.Add(new GJDA10032.ChSetParam
-                    {
-                        Mode = 0,
-                        VonVolt = 12.0,
-                        SetValue = current,
-                        ExtraParam = extra
-                    });
-                }
-                dev.DeviceHandle.SetBatch1To16Channel(list16, false);
-                dev.DeviceHandle.SetBatch17To32Channel(list17_32, false);
-                MessageBox.Show($"设备{devId}参数下发成功");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"设备{devId}下发参数失败：{ex.Message}");
-            }
+            for (int i = 1; i <= DeviceComm.LoadCount; i++) RenderDeviceChannels(i);
         }
-        private void BtnReadData_Click(object sender, RoutedEventArgs e)
-        {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1) return;
-            var dev = GetDevById(devId);
-            var wrapPanel = GetDevWrapPanel(devId);
-            if (wrapPanel == null) return;
-            if (!dev.IsConnected || dev.DeviceHandle == null)
-            {
-                MessageBox.Show($"设备{devId}未连接，请先连接");
-                return;
-            }
-            try
-            {
-                var res = dev.DeviceHandle.ReadAll32Channel();
-                wrapPanel.Children.Clear();
-                foreach (var ch in res.Channels)
-                {
-                    var tile = new Border { Style = this.FindResource("DataTile") as Style };
-                    tile.Tag = new Tuple<int, int>(devId, ch.ChNo);
-                    tile.MouseDown += Tile_MouseDown;
-                    var sp = new StackPanel();
-                    sp.Children.Add(new TextBlock { Text = $"CH{ch.ChNo}", FontSize = 11 });
-                    sp.Children.Add(new TextBlock { Text = $"U:{ch.Voltage:F2} V", FontSize = 12 });
-                    sp.Children.Add(new TextBlock { Text = $"I:{ch.Current:F3} A", FontSize = 12 });
-                    tile.Child = sp;
-                    wrapPanel.Children.Add(tile);
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"设备{devId}读取实时数据失败：{ex.Message}");
-            }
-        }
-        private void Tile_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        {
-            if (sender is Border bd && bd.Tag is Tuple<int, int> tagData)
-            {
-                int devId = tagData.Item1;
-                int chNo = tagData.Item2;
-                var dev = GetDevById(devId);
-                var devCfg = _globalCfg.Devices.First(d => d.DevId == devId);
-                var savedCh = devCfg.Channels.FirstOrDefault(c => c.ChNo == chNo);
-                var win = new LoadSettingWindow();
-                win.ClickChNo = chNo;
-                if (savedCh != null)
-                {
-                    win.OldConfig = new LoadParamResult
-                    {
-                        ChNo = chNo,
-                        ModeText = savedCh.Mode switch
-                        {
-                            0 => "CC 恒流_慢速",
-                            1 => "CV 恒压",
-                            2 => "CP 恒功率",
-                            3 => "CR 恒电阻",
-                            _ => "CC 恒流_慢速"
-                        },
-                        VonVolt = savedCh.VonVolt,
-                        LoadValue = savedCh.SetValue,
-                        ExtraParam = savedCh.ExtraParam
-                    };
-                }
-                var dialogRes = win.ShowDialog();
-                if (dialogRes == true && win.Result != null)
-                {
-                    var para = win.Result;
-                    byte mode = para.ModeText switch
-                    {
-                        "CC 恒流_慢速" => 0,
-                        "CV 恒压" => 1,
-                        "CP 恒功率" => 2,
-                        "CR 恒电阻" => 3,
-                        _ => 0
-                    };
-                    if (para.IsSingleChannel)
-                    {
-                        var chParam = new GJDA10032.ChSetParam
-                        {
-                            Mode = mode,
-                            VonVolt = para.VonVolt,
-                            SetValue = para.LoadValue,
-                            ExtraParam = para.ExtraParam
-                        };
-                        dev.DeviceHandle.SetSingleChannel(chNo, chParam, false);
-                        var existCh = devCfg.Channels.FirstOrDefault(c => c.ChNo == chNo);
-                        if (existCh != null)
-                        {
-                            existCh.Mode = mode;
-                            existCh.VonVolt = para.VonVolt;
-                            existCh.SetValue = para.LoadValue;
-                            existCh.ExtraParam = para.ExtraParam;
-                        }
-                        else
-                        {
-                            devCfg.Channels.Add(new ChannelConfig
-                            {
-                                ChNo = chNo,
-                                Mode = mode,
-                                VonVolt = para.VonVolt,
-                                SetValue = para.LoadValue,
-                                ExtraParam = para.ExtraParam
-                            });
-                        }
-                    }
-                    else
-                    {
-                        var chParam = new GJDA10032.ChSetParam
-                        {
-                            Mode = mode,
-                            VonVolt = para.VonVolt,
-                            SetValue = para.LoadValue,
-                            ExtraParam = para.ExtraParam
-                        };
-                        for (int ch = 1; ch <= 32; ch++)
-                        {
-                            dev.DeviceHandle.SetSingleChannel(ch, chParam, false);
-                        }
-                        devCfg.Channels.Clear();
-                        for (int ch = 1; ch <= 32; ch++)
-                        {
-                            devCfg.Channels.Add(new ChannelConfig
-                            {
-                                ChNo = ch,
-                                Mode = mode,
-                                VonVolt = para.VonVolt,
-                                SetValue = para.LoadValue,
-                                ExtraParam = para.ExtraParam
-                            });
-                        }
-                    }
-                    SaveConfigToJsonFile();
-                    RenderDeviceChannels(devId);
-                }
-            }
-        }
+
+        /// <summary>按保存的通道配置渲染某设备 32 个通道块（显示模式/电压/设定/附加）。</summary>
         private void RenderDeviceChannels(int devId)
         {
             var wrapPanel = GetDevWrapPanel(devId);
             if (wrapPanel == null) return;
             wrapPanel.Children.Clear();
-            var devConfig = _globalCfg.Devices.FirstOrDefault(d => d.DevId == devId);
-            if (devConfig == null) return;
+            var rt = GetRuntime(devId);
+            if (rt == null) return;
             for (int ch = 1; ch <= 32; ch++)
             {
-                var savedCh = devConfig.Channels.FirstOrDefault(c => c.ChNo == ch);
+                var savedCh = rt.Cfg.Channels.FirstOrDefault(c => c.ChNo == ch);
                 int mode = savedCh?.Mode ?? 0;
                 double vonVolt = savedCh?.VonVolt ?? 0;
                 double setVal = savedCh?.SetValue ?? 0;
@@ -686,142 +106,155 @@ namespace AgingTest.Views
                 wrapPanel.Children.Add(border);
             }
         }
-        private void BtnAllChannelOn_Click(object sender, RoutedEventArgs e)
+
+        /// <summary>定时自动采集：读取32通道实时数据并渲染。</summary>
+        private void AutoReadData(int devId)
         {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1) return;
-            var dev = GetDevById(devId);
-            if (!dev.IsConnected || dev.DeviceHandle == null)
+            var rt = GetRuntime(devId);
+            var wrapPanel = GetDevWrapPanel(devId);
+            if (wrapPanel == null || rt == null || !rt.Connected || rt.Handle == null)
             {
-                MessageBox.Show($"设备{devId}未连接，请先连接");
+                _devTimers[devId].Stop();
                 return;
             }
             try
             {
-                var currList = Enumerable.Repeat(0.5d, 32).ToList();
-                dev.DeviceHandle.SetAllChannelCcSlowCurrent(currList);
-                MessageBox.Show($"设备{devId}全部通道开启拉载(0.5A)");
+                var res = rt.Handle.ReadAll32Channel();
+                wrapPanel.Children.Clear();
+                foreach (var ch in res.Channels)
+                {
+                    var tile = new Border { Style = FindResource("DataTile") as Style };
+                    tile.Tag = new Tuple<int, int>(devId, ch.ChNo);
+                    tile.MouseDown += Tile_MouseDown;
+                    var sp = new StackPanel();
+                    sp.Children.Add(new TextBlock { Text = $"CH{ch.ChNo}", FontSize = 11 });
+                    sp.Children.Add(new TextBlock { Text = $"U:{ch.Voltage:F2} V", FontSize = 12 });
+                    sp.Children.Add(new TextBlock { Text = $"I:{ch.Current:F3} A", FontSize = 12 });
+                    tile.Child = sp;
+                    wrapPanel.Children.Add(tile);
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"开启失败：{ex.Message}");
+                _devTimers[devId].Stop();
+                var tb = GetDevStatusTb(devId);
+                if (tb != null)
+                {
+                    tb.Text = "设备状态：通信异常";
+                    tb.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0x35, 0x45));
+                }
+                MessageBox.Show($"设备{devId}自动采集失败：{ex.Message}\n已停止自动刷新", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
-        private void BtnAllChannelOff_Click(object sender, RoutedEventArgs e)
+
+        /// <summary>点击通道块：打开单通道/批量负载参数设置。</summary>
+        private void Tile_MouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            int devId = GetDeviceIdBySender(sender);
-            if (devId < 1) return;
-            var dev = GetDevById(devId);
-            if (!dev.IsConnected || dev.DeviceHandle == null)
+            if (sender is not Border bd || bd.Tag is not Tuple<int, int> tagData) return;
+            int devId = tagData.Item1;
+            int chNo = tagData.Item2;
+            var rt = GetRuntime(devId);
+            if (rt == null) return;
+
+            var savedCh = rt.Cfg.Channels.FirstOrDefault(c => c.ChNo == chNo);
+            var win = new LoadSettingWindow();
+            win.ClickChNo = chNo;
+            if (savedCh != null)
             {
-                MessageBox.Show($"设备{devId}未连接，请先连接");
-                return;
+                win.OldConfig = new LoadParamResult
+                {
+                    ChNo = chNo,
+                    ModeText = savedCh.Mode switch
+                    {
+                        0 => "CC 恒流_慢速",
+                        1 => "CV 恒压",
+                        2 => "CP 恒功率",
+                        3 => "CR 恒电阻",
+                        _ => "CC 恒流_慢速"
+                    },
+                    VonVolt = savedCh.VonVolt,
+                    LoadValue = savedCh.SetValue,
+                    ExtraParam = savedCh.ExtraParam
+                };
             }
-            try
+
+            var dialogRes = win.ShowDialog();
+            if (dialogRes != true || win.Result == null) return;
+            var para = win.Result;
+            byte mode = para.ModeText switch
             {
-                var currList = Enumerable.Repeat(0.0d, 32).ToList();
-                dev.DeviceHandle.SetAllChannelCcSlowCurrent(currList);
-                MessageBox.Show($"设备{devId}全部通道关闭拉载(0A)");
-            }
-            catch (Exception ex)
+                "CC 恒流_慢速" => 0,
+                "CV 恒压" => 1,
+                "CP 恒功率" => 2,
+                "CR 恒电阻" => 3,
+                _ => 0
+            };
+            var chParam = new GJDA10032.ChSetParam
             {
-                MessageBox.Show($"关闭失败：{ex.Message}");
+                Mode = mode,
+                VonVolt = para.VonVolt,
+                SetValue = para.LoadValue,
+                ExtraParam = para.ExtraParam
+            };
+
+            // 未连接时仅保存配置，不向设备下发
+            if (!rt.Connected || rt.Handle == null)
+            {
+                MessageBox.Show($"设备{devId}未连接，参数仅保存未下发，请先在通讯设置中连接", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
             }
+
+            var channels = new System.Collections.Generic.List<GjdaChannelItem>(rt.Cfg.Channels);
+            if (para.IsSingleChannel)
+            {
+                if (rt.Connected && rt.Handle != null) rt.Handle.SetSingleChannel(chNo, chParam, false);
+                var exist = channels.FirstOrDefault(c => c.ChNo == chNo);
+                if (exist != null)
+                {
+                    exist.Mode = mode; exist.VonVolt = para.VonVolt; exist.SetValue = para.LoadValue; exist.ExtraParam = para.ExtraParam;
+                }
+                else
+                {
+                    channels.Add(new GjdaChannelItem { ChNo = chNo, Mode = mode, VonVolt = para.VonVolt, SetValue = para.LoadValue, ExtraParam = para.ExtraParam });
+                }
+            }
+            else
+            {
+                if (rt.Connected && rt.Handle != null)
+                {
+                    for (int ch = 1; ch <= 32; ch++) rt.Handle.SetSingleChannel(ch, chParam, false);
+                }
+                channels.Clear();
+                for (int ch = 1; ch <= 32; ch++)
+                {
+                    channels.Add(new GjdaChannelItem { ChNo = ch, Mode = mode, VonVolt = para.VonVolt, SetValue = para.LoadValue, ExtraParam = para.ExtraParam });
+                }
+            }
+            rt.Cfg.Channels = channels;
+            DeviceComm.SaveLoadChannels(devId, channels);
+            RenderDeviceChannels(devId);
         }
-        // 页面切换离开时触发
+
+        private TextBlock? GetDevStatusTb(int devId)
+            => devId switch
+            {
+                1 => TbDev1Status,
+                2 => TbDev2Status,
+                _ => null
+            };
+
+        private WrapPanel? GetDevWrapPanel(int devId)
+            => devId switch
+            {
+                1 => WrapDev1Data,
+                2 => WrapDev2Data,
+                _ => null
+            };
+
+        // 连接由 DeviceComm 统一管理，本页卸载时仅停止采集定时器、取消订阅，不断开设备连接
         private void UserControl_Unloaded(object sender, RoutedEventArgs e)
         {
-            DisconnectAllDevice();
+            for (int i = 1; i <= DeviceComm.LoadCount; i++) _devTimers[i]?.Stop();
+            DeviceComm.StateChanged -= DeviceComm_StateChanged;
         }
-        /// <summary>
-        /// 全部4台电子负载统一断开
-        /// </summary>
-        /// <summary>
-        /// 全部4台电子负载统一断开
-        /// </summary>
-        private void DisconnectAllDevice()
-        {
-            //设备1
-            if (_devList[0] != null && _devList[0].IsConnected)
-            {
-                _devList[0].DeviceHandle?.Close(); // 调用驱动实例关闭串口
-                _devList[0].IsConnected = false;
-                TbDev1Status.Text = "设备状态：未连接";
-                TbDev1Status.Foreground = Brushes.Red;
-            }
-            //设备2
-            if (_devList[1] != null && _devList[1].IsConnected)
-            {
-                _devList[1].DeviceHandle?.Close();
-                _devList[1].IsConnected = false;
-                TbDev2Status.Text = "设备状态：未连接";
-                TbDev2Status.Foreground = Brushes.Red;
-            }
-            //设备3
-            if (_devList[2] != null && _devList[2].IsConnected)
-            {
-                _devList[2].DeviceHandle?.Close();
-                _devList[2].IsConnected = false;
-                TbDev3Status.Text = "设备状态：未连接";
-                TbDev3Status.Foreground = Brushes.Red;
-            }
-            //设备4
-            if (_devList[3] != null && _devList[3].IsConnected)
-            {
-                _devList[3].DeviceHandle?.Close();
-                _devList[3].IsConnected = false;
-                TbDev4Status.Text = "设备状态：未连接";
-                TbDev4Status.Foreground = Brushes.Red;
-            }
-        }
-        //protected override void OnUnloaded(RoutedEventArgs e)
-        //{
-        //    for (int i = 1; i <= 4; i++)
-        //    {
-        //        _devTimers[i]?.Stop();
-        //    }
-        //    foreach (var d in _devList)
-        //    {
-        //        try
-        //        {
-        //            d.DeviceHandle?.Close();
-        //        }
-        //        catch { }
-        //        d.DeviceHandle = null;
-        //        d.IsConnected = false;
-        //    }
-        //    base.OnUnloaded(e);
-        //}
-        #region 实体类
-        public class GjdaDeviceItem
-        {
-            public int DevId { get; set; }
-            public string? ComPort { get; set; }
-            public int BaudRate { get; set; }
-            public byte SlaveAddr { get; set; }
-            public bool IsConnected { get; set; }
-            public GJDA10032? DeviceHandle { get; set; }
-        }
-        public class ChannelConfig
-        {
-            public int ChNo { get; set; }
-            public int Mode { get; set; }
-            public double VonVolt { get; set; }
-            public double SetValue { get; set; }
-            public byte ExtraParam { get; set; }
-        }
-        public class DeviceConfig
-        {
-            public int DevId { get; set; }
-            public string ComPort { get; set; } = "COM1";
-            public int BaudRate { get; set; } = 9600;
-            public byte SlaveAddr { get; set; } = 1;
-            public List<ChannelConfig> Channels { get; set; } = new();
-        }
-        public class GlobalDeviceConfig
-        {
-            public List<DeviceConfig> Devices { get; set; } = new();
-        }
-        #endregion
     }
 }

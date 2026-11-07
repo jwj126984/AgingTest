@@ -13,7 +13,39 @@ namespace AgingTest.Models
 
         /// <summary>GJDA‑100‑32电子负载设备集合</summary>
         public List<GjdaDeviceItem> GjdaDevices { get; set; } = new List<GjdaDeviceItem>();
+
+        /// <summary>设备通讯设置（电阻卡/继电器板串口、程控电源网口）</summary>
+        public CommunicationConfig Comm { get; set; } = new CommunicationConfig();
     }
+
+    #region 通讯设置实体
+    /// <summary>设备通讯参数集合（485串口 + 程控电源网口）。</summary>
+    public class CommunicationConfig
+    {
+        /// <summary>485总线端口（电阻模拟卡+继电器板共用），共6个；每端口挂 电阻卡地址1~4、继电器板地址17~20。</summary>
+        public List<RrPortSetting> RrPorts { get; set; } = new List<RrPortSetting>();
+
+        /// <summary>大电流程控电源 N36100 设备（6台，各自独立IP/端口）。</summary>
+        public List<NetDeviceSetting> N36100 { get; set; } = new List<NetDeviceSetting>();
+
+        /// <summary>高精度程控电源 N36600 设备（6台，各自独立IP/端口）。</summary>
+        public List<NetDeviceSetting> N36600 { get; set; } = new List<NetDeviceSetting>();
+    }
+
+    /// <summary>485总线串口设置（电阻/继电器板共用）。</summary>
+    public class RrPortSetting
+    {
+        public string ComPort { get; set; } = "COM1";
+        public int Baud { get; set; } = 9600;
+    }
+
+    /// <summary>程控电源网口设置（IP/端口）。</summary>
+    public class NetDeviceSetting
+    {
+        public string Ip { get; set; } = "192.168.0.123";
+        public int Port { get; set; } = 7000;
+    }
+    #endregion
 
     #region CAN卡实体
     /// <summary>NetCAN800H单张CAN卡配置实体</summary>

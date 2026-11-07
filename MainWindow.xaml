@@ -58,6 +58,51 @@
                     <Ellipse x:Name="CommDot" Width="10" Height="10" Fill="#F0A020" VerticalAlignment="Center" Margin="0,0,6,0"/>
                     <TextBlock x:Name="TxtComm" Text="通讯未连接" Foreground="#FFD9A8" FontSize="13" VerticalAlignment="Center" Margin="0,0,18,0"/>
                     <TextBlock x:Name="TxtUser" Text="当前用户：--" Foreground="White" FontSize="13" VerticalAlignment="Center" Margin="0,0,18,0"/>
+                    <Button x:Name="BtnCommSettings"
+                Content="通讯设置"
+                Height="26"
+                Padding="10,0"
+                FontSize="12"
+                FontWeight="Bold"
+                Foreground="White"
+                Background="#3A5580"
+                BorderThickness="0"
+                Cursor="Hand"
+                Margin="0,0,10,0"
+                VerticalAlignment="Center"
+                Click="BtnCommSettings_Click"
+                AutomationProperties.AutomationId="BtnCommSettings"/>
+
+                    <Button x:Name="BtnConnectDevice"
+                Content="连接设备"
+                Height="26"
+                Padding="10,0"
+                FontSize="12"
+                FontWeight="Bold"
+                Foreground="White"
+                Background="#2E9E4F"
+                BorderThickness="0"
+                Cursor="Hand"
+                Margin="0,0,10,0"
+                VerticalAlignment="Center"
+                Click="BtnConnectDevice_Click"
+                AutomationProperties.AutomationId="BtnConnectDevice"/>
+
+                    <Button x:Name="BtnDisconnectDevice"
+                Content="断开设备"
+                Height="26"
+                Padding="10,0"
+                FontSize="12"
+                FontWeight="Bold"
+                Foreground="White"
+                Background="#E5484D"
+                BorderThickness="0"
+                Cursor="Hand"
+                Margin="0,0,10,0"
+                VerticalAlignment="Center"
+                Click="BtnDisconnectDevice_Click"
+                AutomationProperties.AutomationId="BtnDisconnectDevice"/>
+
                     <Button x:Name="BtnHardwareControl"
                 Content="硬件控制"
                 Height="26"

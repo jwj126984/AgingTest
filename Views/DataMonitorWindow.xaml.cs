@@ -155,10 +155,12 @@ namespace AgingTest.Views
             TxtDetailFault.Foreground = new SolidColorBrush(string.IsNullOrEmpty(_ws.FaultInfo)
                 ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xC0, 0x39, 0x2B));
 
+
             // DTC 故障码（文档要求实时监控 DTC 信息）
             TxtDetailDtc.Text = string.IsNullOrEmpty(_ws.DtcInfo) || _ws.DtcInfo == "无" ? "无" : _ws.DtcInfo;
             TxtDetailDtc.Foreground = new SolidColorBrush(string.IsNullOrEmpty(_ws.DtcInfo) || _ws.DtcInfo == "无"
                 ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xC0, 0x39, 0x2B));
+
 
             // 均衡失效自诊断（模拟：小概率失效演示）
             _ws.BalanceFault = _rnd.NextDouble() < 0.02;

@@ -5,14 +5,49 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              mc:Ignorable="d" 
              d:DesignHeight="800" d:DesignWidth="1200">
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="12">
-            <TextBlock Text="ZLG CAN-800H 12通道管理" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+    <!-- 本页由宿主窗口(CommunicationSettingsWindow)的 ScrollViewer 统一滚动，无需内层 ScrollViewer -->
+    <StackPanel Margin="12">
+            <TextBlock Text="ZLG CAN-800H 配置与连接" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
 
-         
+            <!-- 设备搜索与网络配置（按《800H函数使用手册》ZNetAdv：搜索/修改设备IP） -->
+            <Border Background="White" BorderBrush="#D0D7E3" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,14">
+                <StackPanel>
+                    <TextBlock Text="设备搜索与网络配置" FontWeight="SemiBold" Foreground="#1F2937"/>
+                    <TextBlock Text="广播搜索局域网内 CAN-800H 设备；可修改选中设备的 IP/掩码/网关（需设备配置密码，默认 88888）。" 
+                               Foreground="#6B7280" FontSize="11" Margin="0,4,0,0"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="搜索设备" Click="BtnSearchDev_Click" Padding="12,4" FontSize="12" Background="#2F6FED" Foreground="White" BorderThickness="0" Cursor="Hand"/>
+                        <Button Content="批量分配预设IP(1~6)" Click="BtnBatchAssignIp_Click" Padding="12,4" FontSize="12" Background="#F27022" Foreground="White" BorderThickness="0" Cursor="Hand" Margin="8,0,0,0"/>
+                        <Button Content="恢复出厂IP(192.168.0.100)" Click="BtnResetFactoryIp_Click" Padding="12,4" FontSize="12" Background="#6B7280" Foreground="White" BorderThickness="0" Cursor="Hand" Margin="8,0,0,0"/>
+                        <TextBlock x:Name="TxtSearchInfo" VerticalAlignment="Center" Foreground="#667" Margin="14,0,0,0" FontSize="12"/>
+                    </StackPanel>
+                    <DataGrid x:Name="DgDevices" Height="150" Margin="0,8,0,0" AutoGenerateColumns="False" IsReadOnly="True"
+                              HeadersVisibility="Column" GridLinesVisibility="All" FontSize="12" RowBackground="White"
+                              AlternatingRowBackground="#F7F9FC" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="序号" Binding="{Binding No}" Width="50"/>
+                            <DataGridTextColumn Header="设备MAC" Binding="{Binding Mac}" Width="150"/>
+                            <DataGridTextColumn Header="当前IP" Binding="{Binding CurrentIp}" Width="140"/>
+                            <DataGridTextColumn Header="子网掩码" Binding="{Binding SubnetMask}" Width="140"/>
+                            <DataGridTextColumn Header="网关" Binding="{Binding Gateway}" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="修改选中设备→新IP:" VerticalAlignment="Center" FontSize="12"/>
+                        <TextBox x:Name="TxtNewIp" Width="120" Text="192.168.0.10" FontSize="12" Margin="6,0,0,0"/>
+                        <TextBlock Text="掩码:" VerticalAlignment="Center" FontSize="12" Margin="10,0,0,0"/>
+                        <TextBox x:Name="TxtNewMask" Width="120" Text="255.255.255.0" FontSize="12" Margin="6,0,0,0"/>
+                        <TextBlock Text="网关:" VerticalAlignment="Center" FontSize="12" Margin="10,0,0,0"/>
+                        <TextBox x:Name="TxtNewGateway" Width="120" Text="192.168.0.1" FontSize="12" Margin="6,0,0,0"/>
+                        <TextBlock Text="密码:" VerticalAlignment="Center" FontSize="12" Margin="10,0,0,0"/>
+                        <TextBox x:Name="TxtPwd" Width="80" Text="88888" FontSize="12" Margin="6,0,0,0"/>
+                        <Button Content="应用修改" Click="BtnModifyIp_Click" Padding="12,4" FontSize="12" Background="#2F6FED" Foreground="White" BorderThickness="0" Cursor="Hand" Margin="12,0,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <WrapPanel x:Name="WrapCanCards" Orientation="Horizontal"/>
 
-        </StackPanel>
-    </ScrollViewer>
+    </StackPanel>
 
 </UserControl>

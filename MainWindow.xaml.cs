@@ -37,39 +37,11 @@ namespace AgingTest
         private readonly UserInfo _currentUser;
 
         private const int MaxChannel = 8;
-        // 管理最多6台NetCAN‑800H运行时句柄集合
-        private readonly List<NetCanRuntimeDevice> _runtimeDeviceList = new List<NetCanRuntimeDevice>();
 
         private volatile bool _recvRunning = false;
         private Thread? _recvThread;
 
         private static string HexString(byte[] data) => string.Join(" ", data.Select(b => b.ToString("X2")));
-
-
-        /// <summary>单台NetCAN800H设备运行时状态（仅内存，不写入JSON）</summary>
-        public class NetCanRuntimeDevice
-        {
-            /// <summary>配置对应的CanIndex 1~6</summary>
-            public int CanIndex { get; set; }
-
-            /// <summary>设备顶层句柄 OpenDevice返回</summary>
-            [System.Text.Json.Serialization.JsonIgnore]
-            public IntPtr DeviceHandle { get; set; } = IntPtr.Zero;
-
-            /// <summary>该设备下8路通道句柄 ch0‑ch7</summary>
-            [System.Text.Json.Serialization.JsonIgnore]
-            public IntPtr[] ChannelHandles { get; set; }
-
-            /// <summary>对应通道是否已经StartCAN启动</summary>
-            [System.Text.Json.Serialization.JsonIgnore]
-            public bool[] ChannelStarted { get; set; }
-
-            public NetCanRuntimeDevice()
-            {
-                ChannelHandles = new IntPtr[8];
-                ChannelStarted = new bool[8];
-            }
-        }
 
 
 
@@ -92,7 +64,69 @@ namespace AgingTest
 
             ScanInput.Focus();
             AddLog($"系统就绪（当前用户：{user.RoleName}），请先扫描【工位码】绑定工位（先扫工位码，再扫产品码）");
+            DeviceComm.LoadSettings();
+            DeviceComm.StateChanged += DeviceComm_StateChanged;
+            UpdateCommIndicator();
+            Closed += (_, _) =>
+            {
+                DeviceComm.StateChanged -= DeviceComm_StateChanged;
+                CanComm.Clear();
+            };
             ReadFullConfig();
+        }
+
+        /// <summary>设备通讯状态变化时刷新顶栏指示灯。</summary>
+        private void DeviceComm_StateChanged()
+        {
+            Dispatcher.Invoke(UpdateCommIndicator);
+        }
+
+        /// <summary>根据是否有设备连接，更新顶栏“通讯状态”指示灯。</summary>
+        private void UpdateCommIndicator()
+        {
+            bool any = DeviceComm.AnyConnected;
+            TxtComm.Text = any ? "设备已连接" : "通讯未连接";
+            TxtComm.Foreground = any ? new SolidColorBrush(Color.FromRgb(0xD9, 0xF3, 0xE3)) : new SolidColorBrush(Color.FromRgb(0xFF, 0xD9, 0xA8));
+            CommDot.Fill = any ? new SolidColorBrush(Color.FromRgb(0x2F, 0xA8, 0x4F)) : new SolidColorBrush(Color.FromRgb(0xF0, 0xA0, 0x20));
+        }
+
+        /// <summary>打开通讯设置窗口（设备通讯参数集中编辑/连接管理）。</summary>
+        private void BtnCommSettings_Click(object sender, RoutedEventArgs e)
+        {
+            var win = new Views.CommunicationSettingsWindow { Owner = this };
+            win.ShowDialog();
+            UpdateCommIndicator();
+            AddLog("[通讯设置] 通讯设置窗口已关闭");
+        }
+
+        /// <summary>连接全部被控设备。</summary>
+        private void BtnConnectDevice_Click(object sender, RoutedEventArgs e)
+        {
+            var errors = Models.DeviceComm.ConnectAll();
+            UpdateCommIndicator();
+            if (errors.Count == 0)
+            {
+                AddLog("[连接设备] 全部设备连接成功");
+                SetStatus("已连接全部设备");
+                Hint("全部设备连接成功");
+            }
+            else
+            {
+                foreach (var err in errors) AddLog("[连接设备] " + err);
+                AddLog($"[连接设备] 有 {errors.Count} 项设备连接失败");
+                SetStatus($"设备连接：{errors.Count} 项失败");
+                Hint("部分设备连接失败，详见日志");
+            }
+        }
+
+        /// <summary>断开全部被控设备。</summary>
+        private void BtnDisconnectDevice_Click(object sender, RoutedEventArgs e)
+        {
+            Models.DeviceComm.DisconnectAll();
+            UpdateCommIndicator();
+            AddLog("[断开设备] 已断开全部设备");
+            SetStatus("已断开全部设备");
+            Hint("已断开全部设备");
         }
 
 
@@ -127,124 +161,25 @@ namespace AgingTest
 
                 try
                 {
-                    // 遍历每一张CAN卡配置（CanIndex 1~6）
+                    // 遍历每一张CAN卡配置（CanIndex 1~6），单卡失败不影响其它卡
                     foreach (var card in canCardItemList)
                     {
                         try
                         {
                             if (string.IsNullOrWhiteSpace(card.IpAddress))
                             {
-                                AddLog($"【CAN{card.CanIndex}】IP配置为空，终止全部CAN初始化！");
-                                return; // IP为空，直接停止全部后续步骤
+                                AddLog($"【CAN{card.CanIndex}】IP配置为空，跳过该卡");
+                                continue;
                             }
-
-                            // 检查：该设备是否已经存在运行实例，避免重复打开
-                            var existRuntime = _runtimeDeviceList.FirstOrDefault(d => d.CanIndex == card.CanIndex);
-                            if (existRuntime != null && existRuntime.DeviceHandle != IntPtr.Zero)
-                            {
-                                AddLog($"【CAN{card.CanIndex}】设备已经打开，终止全部CAN初始化！");
-                                return;
-                            }
-
-                            // 创建运行时状态对象
-                            var runtimeDev = new NetCanRuntimeDevice
-                            {
-                                CanIndex = card.CanIndex
-                            };
-
-                            // =========打开NetCAN‑800H设备 =========
-                            uint type = ZlgCan.ZCAN_CANFDNET_800H;
-                            uint devIndex = (uint)(card.CanIndex - 1);
-                            IntPtr dev = ZlgCan.OpenDevice(type, devIndex);
-                            if (dev == IntPtr.Zero)
-                            {
-                                AddLog($"【CAN{card.CanIndex}】打开设备失败 type={type}, devIndex={devIndex}，终止全部CAN初始化！");
-                                return; // ❗打开设备失败，直接停止所有后续
-                            }
-                            runtimeDev.DeviceHandle = dev;
-                            AddLog($"【CAN{card.CanIndex}】打开设备成功 handle=0x{dev.ToInt64():X}");
-
-                            // ========= 8个通道 ch0 ~ ch7 =========
-                            for (int ch = 0; ch < 8; ch++)
-                            {
-                                try
-                                {
-                                    // 网络参数设置
-                                    string mode = card.WorkMode == 1 ? "1" : "0";
-                                    bool ok = ZlgCan.ZCAN_SetValue(dev, "0/work_mode", mode) == ZlgCan.STATUS_OK;
-
-                                    string workPort = card.RemotePort.ToString();
-                                    if (ok && !string.IsNullOrEmpty(workPort))
-                                    {
-                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/work_port", workPort) == ZlgCan.STATUS_OK;
-                                    }
-
-                                    string ip = card.IpAddress;
-                                    if (ok && !string.IsNullOrEmpty(ip))
-                                    {
-                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/ip", ip) == ZlgCan.STATUS_OK;
-                                    }
-
-                                    string localPort = card.LocalPort.ToString();
-                                    if (ok && !string.IsNullOrEmpty(localPort))
-                                    {
-                                        ok = ZlgCan.ZCAN_SetValue(dev, "0/local_port", localPort) == ZlgCan.STATUS_OK;
-                                    }
-
-                                    AddLog(ok ? $"网络配置下发成功：模式={mode}, IP={ip}, 工作端口={workPort}, 本地端口={localPort}" : $"【CAN{card.CanIndex}】网络配置下发失败！");
-                                    if (!ok)
-                                    {
-                                        AddLog($"【CAN{card.CanIndex}】网络参数设置失败，终止全部CAN初始化！");
-                                        return; // ❗网络配置下发失败，直接终止全部
-                                    }
-
-                                    var chInitCfg = new ZlgCan.ZCAN_CHANNEL_INIT_CONFIG
-                                    {
-                                        can_type = (uint)card.CanFdAcc,
-                                        acc_code = 0,
-                                        acc_mask = 0xFFFFFFFF,
-                                        reserved = 0,
-                                        filter = 0,
-                                        timing0 = 0x00,
-                                        timing1 = 0x1C, // 修改为你的实际波特率定时参数
-                                        mode = card.ListenOnly ? (byte)1 : (byte)0
-                                    };
-
-                                    IntPtr chHandle = ZlgCan.ZCAN_InitCAN(dev, (uint)ch, ref chInitCfg);
-                                    if (chHandle == IntPtr.Zero)
-                                    {
-                                        AddLog($"【CAN{card.CanIndex}】CH{ch} 通道初始化失败 ZCAN_InitCAN，跳过当前通道，继续本卡其它通道");
-                                        return; // 单通道失败：只跳过本通道，**不停止整卡、不停止其它卡**
-                                    }
-                                    runtimeDev.ChannelHandles[ch] = chHandle;
-
-                                    uint startRet = ZlgCan.ZCAN_StartCAN(chHandle);
-                                    if (startRet != ZlgCan.STATUS_OK)
-                                    {
-                                        AddLog($"【CAN{card.CanIndex}】CH{ch} 启动失败 ret={startRet}，跳过当前通道，继续本卡其它通道");
-                                        return; // 单通道启动失败，仅跳过该通道
-                                    }
-                                    runtimeDev.ChannelStarted[ch] = true;
-                                    AddLog($"【CAN{card.CanIndex}】CH{ch} 初始化并启动成功 can_type={(card.CanFdAcc == 1 ? "CANFD" : "CAN")}");
-
-                                    Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
-                                }
-                                catch (Exception chEx)
-                                {
-                                    AddLog($"【CAN{card.CanIndex}】CH{ch} 通道异常：{chEx.Message}，跳过该通道");
-                                    return; // 单个通道异常，继续处理同卡其它通道
-                                }
-                            }
-
-                            // 把本台设备加入运行集合
-                            _runtimeDeviceList.Add(runtimeDev);
-
+                            var (ok, err) = CanComm.OpenCard(card.CanIndex, card, AddLog);
+                            AddLog($"【CAN{card.CanIndex}】{err}");
+                            if (!ok) AddLog($"【CAN{card.CanIndex}】连接失败，继续下一张卡");
+                            // 泵一次 UI 消息，保持窗口在批量连接期间可响应
                             Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
                         }
                         catch (Exception cardEx)
                         {
-                            AddLog($"【CAN{card.CanIndex}】设备发生严重异常：{cardEx.Message} → 停止所有CAN卡初始化流程");
-                            return; // ❗整卡出现异常，直接停止全部后续
+                            AddLog($"【CAN{card.CanIndex}】连接异常：{cardEx.Message}，继续下一张卡");
                         }
                     }
 
@@ -284,9 +219,9 @@ namespace AgingTest
         private void ReceiveLoop()
         {
             var rxCan = new ZlgCan.ZCAN_Receive_Data[256];
-            var rxFd = new ZlgCan.ZCAN_Receive_Data[256];
+            var rxFd = new ZlgCan.ZCAN_ReceiveFD_Data[256];
             int canSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
-            int fdSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
+            int fdSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_ReceiveFD_Data));
             IntPtr ptrCan = Marshal.AllocHGlobal(canSize * rxCan.Length);
             IntPtr ptrFd = Marshal.AllocHGlobal(fdSize * rxFd.Length);
             try
@@ -294,8 +229,8 @@ namespace AgingTest
                 while (_recvRunning)
                 {
                     bool anyStarted = false;
-                    // 遍历全部CAN设备（6台800H）
-                    foreach (var dev in _runtimeDeviceList)
+                    // 遍历全部CAN设备（快照避免与连接/断开并发增删冲突）
+                    foreach (var dev in CanComm.Cards.ToList())
                     {
                         // 遍历该设备8个通道 ch0~ch7
                         for (int ch = 0; ch < MaxChannel; ch++)
@@ -308,6 +243,7 @@ namespace AgingTest
                             IntPtr h = dev.ChannelHandles[ch];
                             try
                             {
+                                // ---- CAN 帧接收（type 0）----
                                 uint cnt = ZlgCan.ZCAN_GetReceiveNum(h, 0);
                                 while (_recvRunning && cnt > 0)
                                 {
@@ -315,15 +251,26 @@ namespace AgingTest
                                     if (r == 0) break;
                                     for (uint k = 0; k < r; k++)
                                     {
-                                        // 从非托管内存拷贝报文到 rxCan 数组
                                         IntPtr p = ptrCan + (int)k * canSize;
                                         var frame = Marshal.PtrToStructure<ZlgCan.ZCAN_Receive_Data>(p);
-
-                                        // ========== 这里写你的报文解析业务 ==========
-                                        // 标记来源：dev.CanIndex(设备编号), ch(通道号)
-                                        // AddLog($"CAN{dev.CanIndex} CH{ch} 收到报文 ID:{frame.id}");
+                                        CanComm.RaiseFrameReceived(dev.CanIndex, ch, frame.frame.can_id, frame.frame.data, frame.frame.can_dlc, false);
                                     }
                                     cnt -= r;
+                                }
+
+                                // ---- CANFD 帧接收（type 1）----
+                                uint cntFd = ZlgCan.ZCAN_GetReceiveNum(h, 1);
+                                while (_recvRunning && cntFd > 0)
+                                {
+                                    uint rFd = ZlgCan.ZCAN_ReceiveFD(h, ptrFd, (uint)Math.Min(cntFd, 256), 10);
+                                    if (rFd == 0) break;
+                                    for (uint k = 0; k < rFd; k++)
+                                    {
+                                        IntPtr pFd = ptrFd + (int)k * fdSize;
+                                        var ffd = Marshal.PtrToStructure<ZlgCan.ZCAN_ReceiveFD_Data>(pFd);
+                                        CanComm.RaiseFrameReceived(dev.CanIndex, ch, ffd.frame.can_id, ffd.frame.data, ffd.frame.len, true);
+                                    }
+                                    cntFd -= rFd;
                                 }
                             }
                             catch (Exception ex)
@@ -332,10 +279,8 @@ namespace AgingTest
                             }
                         }
                     }
-                    if (!anyStarted)
-                    {
-                        Thread.Sleep(50); // 没有通道启用，降低循环频率减少CPU占用
-                    }
+                    // 有通道启用时用短休眠控制轮询频率，避免忙等占用整核CPU；无通道启用时进一步降频
+                    Thread.Sleep(anyStarted ? 5 : 50);
                 }
             }
             finally

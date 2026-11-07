@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,11 +8,50 @@ namespace AgingTest.Views
 {
     public partial class HardwareControlWindow : Window
     {
+        /// <summary>
+        /// 按菜单名缓存已创建的设备控制页。切页仅切换 Visibility，
+        /// 控件不会从视觉树移除，故不触发 Unloaded，各设备的连接与当前状态得以保持；
+        /// 窗口关闭时整树卸载，各 UC 的 Unloaded 断开各自设备连接。
+        /// </summary>
+        private readonly Dictionary<string, UIElement> _pages = new();
+
         public HardwareControlWindow()
         {
             InitializeComponent();
-            // 默认加载电子负载页面
-            ccMain.Content = new UC_LoadDevice();
+            ShowPage("多通道电子负载");
+        }
+
+        /// <summary>取（或首次创建）指定菜单对应的设备页并加入 PageHost。</summary>
+        private UIElement? EnsurePage(string menuName)
+        {
+            if (_pages.TryGetValue(menuName, out var cached)) return cached;
+            UIElement? page = menuName switch
+            {
+                "多通道电子负载" => new UC_LoadDevice(),
+                "电阻模拟卡" => new UC_ResistorBoard(),
+                "继电器板" => new UC_RelayBoard(),
+                "大电流程控电源" => new UC_N36100Power(),
+                "高精度程控电源" => new UC_N36600Power(),
+                "CAN-800H 调试" => new UC_CanDebug(),
+                _ => null
+            };
+            if (page == null) return null;
+            _pages[menuName] = page;
+            PageHost.Children.Add(page);
+            return page;
+        }
+
+        /// <summary>显示指定页，其余页 Collapsed（保持实例与连接）。</summary>
+        private void ShowPage(string menuName)
+        {
+            var page = EnsurePage(menuName);
+            if (page == null)
+            {
+                MessageBox.Show($"{menuName}页面暂未实现", "提示", MessageBoxButton.OK);
+                return;
+            }
+            foreach (UIElement child in PageHost.Children)
+                child.Visibility = ReferenceEquals(child, page) ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void MenuItem_Click(object sender, RoutedEventArgs e)
@@ -20,40 +60,8 @@ namespace AgingTest.Views
             {
                 string menuName = btn.Content.ToString();
                 HeaderText.Text = menuName;
+                ShowPage(menuName);
 
-                switch (menuName)
-                {
-                    case "多通道电子负载":
-                        ccMain.Content = new UC_LoadDevice();
-                        break;
-                    case "CAN卡-ZLG-800H":
-                        ccMain.Content = new UC_CanZlg800H();
-                        break;
-                    case "交换机":
-                        MessageBox.Show("交换机页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "高精度程控电源":
-                        MessageBox.Show("高精度程控电源页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "大电流程控电源":
-                        MessageBox.Show("大电流程控电源页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "程控电源框架":
-                        MessageBox.Show("程控电源框架页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "电阻模拟卡":
-                        MessageBox.Show("电阻模拟卡页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "继电器板":
-                        MessageBox.Show("继电器板页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "LIN卡":
-                        MessageBox.Show("LIN卡页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                    case "扫码枪":
-                        MessageBox.Show("扫码枪页面暂未实现", "提示", MessageBoxButton.OK);
-                        break;
-                }
                 // 左侧菜单按钮高亮
                 var parentPanel = btn.Parent as StackPanel;
                 if (parentPanel != null)

@@ -17,7 +17,7 @@ namespace demo
         //       以下为预留常量。若实际运行打开失败，请按所用 zlgcan.h 版本核对
         //       并修改该值（或直接在界面“设备类型”输入框填写）。
         // ------------------------------------------------------------------
-        public static uint ZCAN_CANFDNET_800H = 57;   // TODO: 按所用 SDK 的 zlgcan.h 核对确认
+        public static uint ZCAN_CANFDNET_800H = 57;   // 手册附录1：CANFDNET-800U/800H TCP工作方式 = 57，UDP = 58
 
         public const uint TYPE_CAN = 0;            // 通道类型：CAN
         public const uint TYPE_CANFD = 1;            // 通道类型：CANFD

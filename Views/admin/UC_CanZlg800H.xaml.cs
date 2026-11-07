@@ -18,11 +18,46 @@ namespace AgingTest.Views
         private readonly string _jsonConfigPath = Path.Combine(Environment.CurrentDirectory, "Config.json");
         private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { WriteIndented = true };
 
+        // 每卡控件引用（按 CanIndex 1~6）
+        private readonly Dictionary<int, TextBlock> _statusText = new();
+        private readonly ComboBox[] _baudArb = new ComboBox[7];   // 仲裁段波特率
+        private readonly ComboBox[] _baudData = new ComboBox[7];  // CANFD 数据段波特率
+
+        // 标准波特率选项
+        private static readonly int[] ArbBaudList = { 1000000, 800000, 500000, 250000, 125000, 100000, 50000 };
+        private static readonly int[] DataBaudList = { 5000000, 4000000, 2000000, 1000000, 800000, 500000, 250000 };
+
         public UC_CanZlg800H()
         {
             InitializeComponent();
             Create12CanCards();
             LoadConfigFromJson(); //页面打开加载JSON回显
+            CanComm.StateChanged += OnCanStateChanged;
+            RefreshAllStatus();
+        }
+
+        private void OnCanStateChanged()
+        {
+            if (Dispatcher.CheckAccess()) RefreshAllStatus();
+            else Dispatcher.Invoke(RefreshAllStatus);
+        }
+
+        // 本页由宿主窗口(CommunicationSettingsWindow)的外层 ScrollViewer 统一滚动，不在此处理滚轮
+
+        /// <summary>刷新每张卡的连接状态文本。</summary>
+        private void RefreshAllStatus()
+        {
+            for (int i = 1; i <= 6; i++)
+            {
+                if (_statusText.TryGetValue(i, out var tb))
+                {
+                    bool on = CanComm.IsOnline(i);
+                    tb.Text = on ? "● 已连接" : "○ 未连接";
+                    tb.Foreground = on
+                        ? new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45))
+                        : new SolidColorBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
+                }
+            }
         }
 
         /// <summary>动态创建1~12号CAN卡UI卡片（只保留截图6行配置）</summary>
@@ -39,7 +74,9 @@ namespace AgingTest.Views
                     IpAddress = defaultIp,
                     WorkMode = 0, // 默认客户端 0客户端,1服务器
                     LocalPort = 4001,
-                    RemotePort = 8000
+                    RemotePort = 8000,
+                    BaudArbitration = 500000,
+                    BaudData = 2000000
                 };
                 _canCardList.Add(card);
                 // 卡片容器
@@ -99,7 +136,25 @@ namespace AgingTest.Views
                 var txtWorkPort = new TextBox { Width = 120, Text = "8000", Tag = i };
                 rowWorkPort.Children.Add(txtWorkPort);
                 stackMain.Children.Add(rowWorkPort);
-                // ========== 按钮行：【保存】【连接】【断开】 ==========
+                // ========== 行：仲裁段波特率 ==========
+                var rowBaud = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+                rowBaud.Children.Add(new TextBlock { Text = "波特率：", Width = 70, VerticalAlignment = VerticalAlignment.Center });
+                var cbbBaud = new ComboBox { Width = 120, Tag = i };
+                foreach (var b in ArbBaudList) cbbBaud.Items.Add(b);
+                cbbBaud.SelectedItem = 500000;
+                _baudArb[i] = cbbBaud;
+                rowBaud.Children.Add(cbbBaud);
+                stackMain.Children.Add(rowBaud);
+                // ========== 行：CANFD数据段波特率 ==========
+                var rowDataBaud = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+                rowDataBaud.Children.Add(new TextBlock { Text = "数据波特率：", Width = 70, VerticalAlignment = VerticalAlignment.Center });
+                var cbbDataBaud = new ComboBox { Width = 120, Tag = i, IsEnabled = false };
+                foreach (var b in DataBaudList) cbbDataBaud.Items.Add(b);
+                cbbDataBaud.SelectedItem = 2000000;
+                _baudData[i] = cbbDataBaud;
+                rowDataBaud.Children.Add(cbbDataBaud);
+                stackMain.Children.Add(rowDataBaud);
+                // ========== 按钮行：【保存】【连接】【断开】【状态】 ==========
                 var row5 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
                 var btnSave = new Button
                 {
@@ -133,6 +188,15 @@ namespace AgingTest.Views
                 row5.Children.Add(btnSave);
                 row5.Children.Add(btnConnect);
                 row5.Children.Add(btnDisconnect);
+                var txtStatus = new TextBlock
+                {
+                    Text = "○ 未连接",
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(10, 0, 0, 0),
+                    FontSize = 12
+                };
+                _statusText[i] = txtStatus;
+                row5.Children.Add(txtStatus);
                 stackMain.Children.Add(row5);
 
                 groupBox.Content = stackMain;
@@ -143,6 +207,8 @@ namespace AgingTest.Views
                 {
                     bool isCanFd = cbbProto.SelectedItem.ToString() == "CAN FD";
                     rowFdAcc.Visibility = isCanFd ? Visibility.Visible : Visibility.Collapsed;
+                    rowDataBaud.Visibility = isCanFd ? Visibility.Visible : Visibility.Collapsed;
+                    cbbDataBaud.IsEnabled = isCanFd;
                 };
                 //===================== 事件绑定：工作模式切换，控制IP、工作端口显示隐藏 =====================
                 cbbWorkMode.SelectionChanged += (s, e) =>
@@ -227,42 +293,140 @@ namespace AgingTest.Views
             }
         }
 
-        private void BtnCanConnect_Click(object sender, RoutedEventArgs e)
+        private async void BtnCanConnect_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is Button btn && btn.Tag is int canId)
+            if (sender is not Button btn || btn.Tag is not int canId) return;
+            var groupBox = FindGroupBoxByCardIndex(canId);
+            if (groupBox == null) return;
+            var cardConfig = ReadCardUiValue(groupBox);
+            btn.IsEnabled = false;
+            try
             {
-                var groupBox = FindGroupBoxByCardIndex(canId);
-                if (groupBox == null) return;
-                var cardConfig = ReadCardUiValue(groupBox);
-                var card = _canCardList[canId - 1];
-                // ========== 这里是CAN连接逻辑，连接成功后执行保存 ==========
-                MessageBox.Show($"准备连接 CAN{canId} ZLG800H（网口）", "CAN操作");
-                //bool connectOk = card.CanHandle.OpenNet(cardConfig.IpAddress, cardConfig.DevIndex, cardConfig.CanChannel, ...);
-                bool connectOk = true; // 临时占位，后续替换成真实驱动返回值
-                if (connectOk)
-                {
-                    card.IsConnected = true;
-                    // ✅ 连接成功，自动保存当前卡片配置到JSON
-                    SaveSingleCardConfig(cardConfig);
-                    MessageBox.Show($"CAN{canId} ✅ 连接成功，配置已自动保存");
-                }
-                else
-                {
-                    MessageBox.Show($"CAN{canId} ❌ 连接失败");
-                }
+                TxtSearchInfo.Text = $"连接 CAN{canId} 中…";
+                var (ok, err) = await Task.Run(() => CanComm.OpenCard(canId, cardConfig, null));
+                if (ok) SaveSingleCardConfig(cardConfig);   // 连接成功后自动保存（含波特率/IP）
+                MessageBox.Show($"CAN{canId} {(ok ? "✅ 连接成功：" : "❌ 连接失败：")}{err}", "CAN连接");
+                TxtSearchInfo.Text = ok ? $"CAN{canId} 已连接" : "";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"CAN{canId} ❌ 连接异常：{ex.Message}", "CAN连接");
+            }
+            finally
+            {
+                btn.IsEnabled = true;
+                RefreshAllStatus();
             }
         }
 
-        private void BtnCanDisconnect_Click(object sender, RoutedEventArgs e)
+        private async void BtnCanDisconnect_Click(object sender, RoutedEventArgs e)
         {
-            if (sender is Button btn && btn.Tag is int canId)
+            if (sender is not Button btn || btn.Tag is not int canId) return;
+            btn.IsEnabled = false;
+            try
             {
-                var card = _canCardList[canId - 1];
-                MessageBox.Show($"准备断开 CAN{canId} ZLG800H", "CAN操作");
-                //card.CanHandle?.Close();
-                card.IsConnected = false;
-                MessageBox.Show($"CAN{canId} 已断开");
+                bool ok = await Task.Run(() => CanComm.CloseCard(canId));
+                MessageBox.Show($"CAN{canId} {(ok ? "已断开" : "未连接，无需断开")}", "CAN操作");
             }
+            finally
+            {
+                btn.IsEnabled = true;
+                RefreshAllStatus();
+            }
+        }
+
+        // ==================== 设备搜索与网络配置（ZNetAdv） ====================
+
+        private void BtnSearchDev_Click(object sender, RoutedEventArgs e)
+        {
+            var list = NetCan800HNetConfig.SearchDevices();
+            var rows = new List<DevRow>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                rows.Add(new DevRow { No = i + 1, Mac = list[i].Mac, CurrentIp = list[i].CurrentIp, SubnetMask = list[i].SubnetMask, Gateway = list[i].Gateway });
+            }
+            DgDevices.ItemsSource = rows;
+            TxtSearchInfo.Text = list.Count == 0
+                ? "未搜索到设备（检查网线/同网段/供电，需管理员权限）"
+                : $"搜索到 {list.Count} 台设备";
+        }
+
+        private void BtnModifyIp_Click(object sender, RoutedEventArgs e)
+        {
+            if (DgDevices.SelectedItem is not DevRow sel)
+            {
+                MessageBox.Show("请先在列表中选中要修改的设备", "提示");
+                return;
+            }
+            string ip = TxtNewIp.Text.Trim();
+            string mask = TxtNewMask.Text.Trim();
+            string gw = TxtNewGateway.Text.Trim();
+            string pwd = TxtPwd.Text.Trim();
+            if (string.IsNullOrWhiteSpace(ip) || string.IsNullOrWhiteSpace(mask) || string.IsNullOrWhiteSpace(gw))
+            {
+                MessageBox.Show("IP/掩码/网关不能为空", "提示");
+                return;
+            }
+            bool ok = NetCan800HNetConfig.SetDeviceIp(sel.Mac, ip, mask, gw, pwd);
+            MessageBox.Show(ok
+                ? $"已修改 {sel.Mac} → IP {ip}\n设备网口重启，请等待 2~3 秒后再连接"
+                : "修改失败（确认密码、MAC 正确，程序需管理员权限）", "修改IP");
+            BtnSearchDev_Click(sender, e);   // 刷新列表
+        }
+
+        private async void BtnBatchAssignIp_Click(object sender, RoutedEventArgs e)
+        {
+            var btn = sender as Button;
+            btn.IsEnabled = false;
+            try
+            {
+                var devList = NetCan800HNetConfig.SearchDevices();
+                if (devList.Count == 0) { MessageBox.Show("未搜索到设备", "提示"); return; }
+                int success = 0;
+                for (int idx = 0; idx < devList.Count && idx < 6; idx++)
+                {
+                    var dev = devList[idx];
+                    if (NetCan800HNetConfig.SetPresetIpByDevNo(dev.Mac, idx + 1, TxtPwd.Text.Trim()))
+                    {
+                        success++;
+                        // 同步到 CAN 卡片配置
+                        if (idx + 1 <= _canCardList.Count)
+                        {
+                            _canCardList[idx].IpAddress = NetCan800HNetConfig.GetPresetIpByDevNo(idx + 1);
+                            var gb = FindGroupBoxByCardIndex(idx + 1);
+                            if (gb != null) FillCardUiValue(gb, _canCardList[idx]);
+                            SaveSingleCardConfig(_canCardList[idx]);
+                        }
+                    }
+                    await Task.Delay(1200);   // 等待设备网口重启
+                }
+                MessageBox.Show($"批量分配完成：成功 {success}/{devList.Count} 台", "批量分配");
+                BtnSearchDev_Click(sender, e);
+            }
+            catch (Exception ex) { MessageBox.Show($"批量分配异常：{ex.Message}", "异常"); }
+            finally { btn.IsEnabled = true; }
+        }
+
+        private void BtnResetFactoryIp_Click(object sender, RoutedEventArgs e)
+        {
+            if (DgDevices.SelectedItem is not DevRow sel)
+            {
+                MessageBox.Show("请先在列表中选中要恢复的设备", "提示");
+                return;
+            }
+            bool ok = NetCan800HNetConfig.SetDeviceIp(sel.Mac, "192.168.0.100", "255.255.255.0", "192.168.0.1", TxtPwd.Text.Trim());
+            MessageBox.Show(ok ? $"已恢复 {sel.Mac} → 192.168.0.100" : "恢复失败（确认密码/MAC/管理员权限）", "恢复出厂IP");
+            BtnSearchDev_Click(sender, e);
+        }
+
+        /// <summary>设备列表行（DataGrid 绑定）。</summary>
+        public class DevRow
+        {
+            public int No { get; set; }
+            public string Mac { get; set; } = "";
+            public string CurrentIp { get; set; } = "";
+            public string SubnetMask { get; set; } = "";
+            public string Gateway { get; set; } = "";
         }
 
         #region JSON 读写【使用统一Config.json，保护GjdaDevices电子负载数据】
@@ -293,6 +457,8 @@ namespace AgingTest.Views
                     existItem.RemotePort = updatedCard.RemotePort;
                     existItem.CanFdAcc = updatedCard.CanFdAcc;
                     existItem.IsCanFd = updatedCard.IsCanFd;
+                    existItem.BaudArbitration = updatedCard.BaudArbitration;
+                    existItem.BaudData = updatedCard.BaudData;
                 }
                 else
                 {
@@ -396,6 +562,14 @@ namespace AgingTest.Views
                                     //UI索引0=是 →1；索引1=否→0
                                     item.CanFdAcc = cbb.SelectedIndex == 0 ? 1 : 0;
                                 }
+                                if (tbHeader.Text == "波特率：" && cbb.SelectedItem is int arb)
+                                {
+                                    item.BaudArbitration = (uint)arb;
+                                }
+                                if (tbHeader.Text == "数据波特率：" && cbb.SelectedItem is int db)
+                                {
+                                    item.BaudData = (uint)db;
+                                }
                             }
                         }
                     }
@@ -445,6 +619,16 @@ namespace AgingTest.Views
                             {
                                 //CanFdAcc=1(是)→索引0；0(否)→索引1
                                 cbb.SelectedIndex = item.CanFdAcc == 1 ? 0 : 1;
+                            }
+                            if (tbHeader?.Text == "波特率：")
+                            {
+                                cbb.SelectedItem = (int)item.BaudArbitration;
+                                if (cbb.SelectedItem == null && item.BaudArbitration > 0) cbb.SelectedIndex = 0;
+                            }
+                            if (tbHeader?.Text == "数据波特率：")
+                            {
+                                cbb.SelectedItem = (int)item.BaudData;
+                                if (cbb.SelectedItem == null && item.BaudData > 0) cbb.SelectedIndex = 0;
                             }
                         }
                     }

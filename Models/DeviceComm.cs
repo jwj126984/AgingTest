@@ -240,12 +240,17 @@ namespace AgingTest.Models
                     }
                 }
                 var h = new GJDA10032();
+
                 h.AttachSharedPort(LoadPort.Sp!, rt.Cfg.SlaveAddr);
-                if (!h.CheckConnect())
-                {
-                    h.Close();
-                    return $"负载{devId}（地址 {rt.Cfg.SlaveAddr}）通讯检测失败！检查 485 接线、波特率、总线地址";
-                }
+                //if (!h.CheckConnect())
+                //{
+                //    h.Close();
+                //    return $"负载{devId}（地址 {rt.Cfg.SlaveAddr}）通讯检测失败！检查 485 接线、波特率、总线地址";
+                //}
+
+                h.Open(rt.Cfg.ComPort, rt.Cfg.BaudRate, rt.Cfg.SlaveAddr);
+                h.DeviceAddress = rt.Cfg.SlaveAddr;
+         
                 rt.Handle = h;
                 RaiseStateChanged();
                 return null;

@@ -44,13 +44,48 @@
         <Border Background="#f0f2f5" Grid.Column="0">
             <StackPanel>
                 <TextBlock Text="硬件设备列表" FontSize="14" Margin="10,10,10,16" FontWeight="SemiBold"/>
-                <Button Content="多通道电子负载" HorizontalContentAlignment="Left" Padding="16,6" Background="#d8e4f0" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="高精度程控电源" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="大电流程控电源" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="电阻模拟卡" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="继电器板" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="CAN-800H 调试" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
-                <Button Content="扫码枪" HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click"/>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="#d8e4f0" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="多通道电子负载" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotLoad" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="高精度程控电源" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotN36600" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="大电流程控电源" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotN36100" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="电阻模拟卡" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotResistor" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="继电器板" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotRelay" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="CAN-800H 调试" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotCan" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="扫码枪" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotScanner" Width="8" Height="8" Fill="#DDD" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
             </StackPanel>
         </Border>
         <!-- 右侧主区域 -->

@@ -40,7 +40,8 @@ namespace AgingTest.Views
         public CommunicationSettingsWindow()
         {
             InitializeComponent();
-            DeviceComm.LoadSettings();
+            // 配置已由 MainWindow 启动时的 DeviceComm.LoadSettings() 加载，此处不重复调用，
+            // 否则会清空各设备运行时列表，导致已连接的句柄丢失。
             DeviceComm.StateChanged += DeviceComm_StateChanged;
 
             RefreshComList();

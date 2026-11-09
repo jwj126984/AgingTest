@@ -22,8 +22,8 @@ namespace AgingTest.Views
         public UC_LoadDevice()
         {
             InitializeComponent();
-            DeviceComm.LoadSettings();
-            DeviceComm.EnsureLoads();
+            // 配置与运行时由 MainWindow 启动时的 DeviceComm.LoadSettings() 统一加载，
+            // 此处不要再调 LoadSettings()，否则会清空 Loads 重建，丢失已连接的句柄。
             DeviceComm.StateChanged += DeviceComm_StateChanged;
             for (int i = 1; i <= DeviceComm.LoadCount; i++)
             {

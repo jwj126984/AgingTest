@@ -22,6 +22,9 @@ namespace AgingTest.Models
     /// <summary>设备通讯参数集合（485串口 + 程控电源网口）。</summary>
     public class CommunicationConfig
     {
+        /// <summary>电子负载共享 485 串口（GJDA-100-32 ×2 共用一路 485，靠总线地址区分）。</summary>
+        public RrPortSetting LoadPort { get; set; } = new();
+
         /// <summary>485总线端口（电阻模拟卡+继电器板共用），共6个；每端口挂 电阻卡地址1~4、继电器板地址17~20。</summary>
         public List<RrPortSetting> RrPorts { get; set; } = new List<RrPortSetting>();
 

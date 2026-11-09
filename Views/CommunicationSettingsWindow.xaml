@@ -99,8 +99,8 @@
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="14">
 
-                <!-- 电子负载 2 台 -->
-                <GroupBox Header="电子负载（GJDA-100-32 ×2 · RS485 串口）" Style="{StaticResource GroupBoxStyle}">
+                <!-- 电子负载 2 台（共用 1 路 485） -->
+                <GroupBox Header="电子负载（GJDA-100-32 ×2 · 共用 1 路 RS485 · 双总线地址）" Style="{StaticResource GroupBoxStyle}">
                     <StackPanel x:Name="LoadPanel"/>
                 </GroupBox>
 

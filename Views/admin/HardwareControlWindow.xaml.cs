@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using AgingTest.Models;
 
 namespace AgingTest.Views
 {
@@ -18,7 +19,26 @@ namespace AgingTest.Views
         public HardwareControlWindow()
         {
             InitializeComponent();
+            DeviceComm.StateChanged += DeviceComm_StateChanged;
+            Closed += (_, _) => DeviceComm.StateChanged -= DeviceComm_StateChanged;
+            UpdateCommIndicator();
             ShowPage("多通道电子负载");
+        }
+
+        /// <summary>设备连接状态变化时刷新顶栏指示灯。</summary>
+        private void DeviceComm_StateChanged()
+        {
+            if (Dispatcher.CheckAccess()) UpdateCommIndicator();
+            else Dispatcher.Invoke(UpdateCommIndicator);
+        }
+
+        /// <summary>根据是否有设备连接，更新顶栏“通讯状态”指示灯。</summary>
+        private void UpdateCommIndicator()
+        {
+            bool any = DeviceComm.AnyConnected;
+            TxtComm.Text = any ? "设备已连接" : "通讯未连接";
+            TxtComm.Foreground = any ? new SolidColorBrush(Color.FromRgb(0xD9, 0xF3, 0xE3)) : new SolidColorBrush(Color.FromRgb(0xFF, 0xD9, 0xA8));
+            CommDot.Fill = any ? new SolidColorBrush(Color.FromRgb(0x2F, 0xA8, 0x4F)) : new SolidColorBrush(Color.FromRgb(0xF0, 0xA0, 0x20));
         }
 
         /// <summary>取（或首次创建）指定菜单对应的设备页并加入 PageHost。</summary>

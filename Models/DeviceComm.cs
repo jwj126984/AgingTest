@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Ports;
 using System.Linq;
 using System.Text.Json;
 using Common.SerialportHelper;
@@ -10,7 +11,7 @@ namespace AgingTest.Models
     /// <summary>
     /// 【集中通讯管理】统一持有并管理所有被控设备的连接句柄与连接/断开操作。
     /// 硬件拓扑：
-    ///   电子负载 GJDA-100-32 ×2（各 1 个 RS485 串口）
+    ///   电子负载 GJDA-100-32 ×2（共用 1 路 RS485 串口，靠 2 个总线地址区分）
     ///   485总线 ×6（电阻模拟卡 + 继电器板共用；每总线 = 1 串口，挂 电阻卡地址1~4、继电器板地址17~20）
     ///   大电流程控电源 N36100 ×6（各自独立 IP/端口）
     ///   高精度程控电源 N36600 ×6（各自独立 IP/端口）
@@ -44,6 +45,16 @@ namespace AgingTest.Models
         }
         /// <summary>电子负载运行时（DevId 1~2）。</summary>
         public static readonly List<LoadRuntime> Loads = new();
+
+        /// <summary>电子负载共享 485 串口运行时（2 台负载共用）。</summary>
+        public class LoadPortRuntime
+        {
+            public RrPortSetting Cfg { get; set; } = new();
+            public SerialPort? Sp { get; set; }
+            public bool Connected => Sp != null && Sp.IsOpen;
+        }
+        /// <summary>电子负载共享 485 串口。</summary>
+        public static readonly LoadPortRuntime LoadPort = new();
 
         public class RrPort
         {
@@ -128,6 +139,10 @@ namespace AgingTest.Models
                 Loads.Add(new LoadRuntime { Cfg = g });
             EnsureLoads();
 
+            // 电子负载共享 485 串口
+            Root.Comm.LoadPort ??= new RrPortSetting();
+            LoadPort.Cfg = Root.Comm.LoadPort;
+
             // 485 总线（6 路）
             RrPorts.Clear();
             for (int i = 0; i < RrPortCount; i++)
@@ -197,7 +212,7 @@ namespace AgingTest.Models
         }
 
         // ================================================================
-        // 电子负载（GJDA-100-32 ×2）
+        // 电子负载（GJDA-100-32 ×2，共用 1 路 485，双总线地址）
         // ================================================================
         public static string? ConnectLoad(int devId)
         {
@@ -206,13 +221,30 @@ namespace AgingTest.Models
             if (rt.Connected) return null;
             try
             {
+                // 共享 485 串口：首台连接时打开
+                if (!LoadPort.Connected)
+                {
+                    try
+                    {
+                        LoadPort.Sp = new SerialPort(LoadPort.Cfg.ComPort, LoadPort.Cfg.Baud, Parity.None, 8, StopBits.One)
+                        {
+                            ReadTimeout = 2000,
+                            WriteTimeout = 1000
+                        };
+                        LoadPort.Sp.Open();
+                    }
+                    catch (Exception ex)
+                    {
+                        LoadPort.Sp = null;
+                        return $"负载 485 串口 {LoadPort.Cfg.ComPort} 打开失败：{ex.Message}";
+                    }
+                }
                 var h = new GJDA10032();
-                h.Open(rt.Cfg.ComPort, rt.Cfg.BaudRate, rt.Cfg.SlaveAddr);
-                h.DeviceAddress = rt.Cfg.SlaveAddr;
+                h.AttachSharedPort(LoadPort.Sp!, rt.Cfg.SlaveAddr);
                 if (!h.CheckConnect())
                 {
                     h.Close();
-                    return $"负载{devId}通讯检测失败！检查串口、波特率、485接线、从站地址";
+                    return $"负载{devId}（地址 {rt.Cfg.SlaveAddr}）通讯检测失败！检查 485 接线、波特率、总线地址";
                 }
                 rt.Handle = h;
                 RaiseStateChanged();
@@ -230,6 +262,13 @@ namespace AgingTest.Models
             if (rt == null) return;
             try { rt.Handle?.Close(); } catch { }
             rt.Handle = null;
+            // 两台负载都断开后再关闭共享 485 串口
+            if (!Loads.Any(l => l.Connected))
+            {
+                try { LoadPort.Sp?.Close(); } catch { }
+                LoadPort.Sp?.Dispose();
+                LoadPort.Sp = null;
+            }
             RaiseStateChanged();
         }
 

@@ -61,6 +61,12 @@ namespace Common.SerialportHelper
         /// <summary>串口实例</summary>
         private SerialPort? _serialPort;
 
+        /// <summary>是否挂载外部共享串口（true=Close 不关闭/不 Dispose 串口）。</summary>
+        private bool _sharedPort;
+
+        /// <summary>多台负载共用一路 485 时的收发锁（静态，所有实例共享同一把）。</summary>
+        private static readonly object _ioLock = new();
+
         /// <summary>当前设备从站地址，可外部修改</summary>
         public byte DeviceAddress { get; set; }
 
@@ -85,10 +91,26 @@ namespace Common.SerialportHelper
             _serialPort.Open();
         }
 
+        /// <summary>
+        /// 挂载外部共享串口（多台负载共用一路 RS485 时使用，不再自行打开/关闭串口）。
+        /// </summary>
+        /// <param name="sp">已打开的共享串口</param>
+        /// <param name="devAddr">本台设备总线地址</param>
+        public void AttachSharedPort(SerialPort sp, byte? devAddr = null)
+        {
+            if (sp == null || !sp.IsOpen)
+                throw new InvalidOperationException("共享 485 串口未打开");
+            DeviceAddress = devAddr ?? DefaultDeviceAddress;
+            _serialPort = sp;
+            _sharedPort = true;
+        }
+
         /// <summary>关闭串口释放资源</summary>
         //GJDA10032类里Close参考
         public void Close()
         {
+            // 共享串口由 DeviceComm 统一管理，本实例仅解除引用
+            if (_sharedPort) { _serialPort = null; return; }
             if (_serialPort != null && _serialPort.IsOpen)
             {
                 _serialPort.Close();
@@ -159,6 +181,8 @@ namespace Common.SerialportHelper
         /// <summary>底层发送接收帧，协议通信逻辑</summary>
         private byte[] SendFrameAndReceive(byte adr, byte cid, byte[] info, bool expectResponse = true, int retry = 0)
         {
+            lock (_ioLock)
+            {
             if (!_serialPort.IsOpen)
                 throw new InvalidOperationException($"{PowerType}串口未打开，请检查串口");
 
@@ -227,6 +251,7 @@ namespace Common.SerialportHelper
                 return SendFrameAndReceive(adr, cid, info, expectResponse, retry);
             }
             return UnEscapeBytes(resultInfo);
+            }
         }
         #endregion
 

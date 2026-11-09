@@ -19,11 +19,10 @@ namespace AgingTest.Views
         private readonly ObservableCollection<string> ComPortList = new();
         private readonly ObservableCollection<int> BaudList = new() { 9600, 19200, 38400, 57600, 115200 };
 
-        // 负载（1-based，下标0不用）
+        // 负载（1-based，下标0不用）：串口/波特率共享一路 485，仅 _loadCom[1]/_loadBaud[1] 生效；总线地址固定不在界面配置
         private readonly ComboBox[] _loadCom = new ComboBox[DeviceComm.LoadCount + 1];
         private readonly ComboBox[] _loadBaud = new ComboBox[DeviceComm.LoadCount + 1];
-        private readonly TextBox[] _loadSlave = new TextBox[DeviceComm.LoadCount + 1];
-        private readonly TextBlock[] _loadState = new TextBlock[DeviceComm.LoadCount + 1];
+        private TextBlock? _loadPortState;
 
         // 485 总线（1-based）
         private readonly ComboBox[] _rrCom = new ComboBox[DeviceComm.RrPortCount + 1];
@@ -66,19 +65,15 @@ namespace AgingTest.Views
         // ==================== 程序化生成配置行 ====================
         private void BuildRows()
         {
-            // 负载
-            for (int i = 1; i <= DeviceComm.LoadCount; i++)
-            {
-                var com = new ComboBox { Style = (Style)FindResource("InputCombo"), ItemsSource = ComPortList };
-                var baud = new ComboBox { Style = (Style)FindResource("InputCombo"), ItemsSource = BaudList };
-                var slave = new TextBox { Style = (Style)FindResource("InputTextBox"), Width = 52 };
-                var state = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(14, 0, 0, 0) };
-                _loadCom[i] = com; _loadBaud[i] = baud; _loadSlave[i] = slave; _loadState[i] = state;
+            // 负载：1 路共享 485 串口（串口/波特率），2 台负载靠固定总线地址区分，地址不在界面配置
+            var loadCom = new ComboBox { Style = (Style)FindResource("InputCombo"), ItemsSource = ComPortList };
+            var loadBaud = new ComboBox { Style = (Style)FindResource("InputCombo"), ItemsSource = BaudList };
+            _loadCom[1] = loadCom; _loadBaud[1] = loadBaud;
+            _loadPortState = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(14, 0, 0, 0) };
 
-                var btnConn = MakeButton("连接", "SuccessButton", i, BtnLoadConnect_Click);
-                var btnDisc = MakeButton("断开", "DangerButton", i, BtnLoadDisconnect_Click);
-                LoadPanel.Children.Add(BuildLabeledRow($"负载{i}", com, baud, slave, btnConn, btnDisc, state));
-            }
+            var btnLoadConn = MakeButton("连接", "SuccessButton", 0, BtnLoadBusConnect_Click);
+            var btnLoadDisc = MakeButton("断开", "DangerButton", 0, BtnLoadBusDisconnect_Click);
+            LoadPanel.Children.Add(BuildLabeledRow("负载485总线", loadCom, loadBaud, null, btnLoadConn, btnLoadDisc, _loadPortState));
 
             // 485 总线
             for (int i = 1; i <= DeviceComm.RrPortCount; i++)
@@ -135,7 +130,7 @@ namespace AgingTest.Views
 
         /// <summary>串口类行：标签 + 串口 + 波特率(+从站) + 连接/断开 + 状态。</summary>
         private static StackPanel BuildLabeledRow(string label, ComboBox com, ComboBox baud, TextBox? slave,
-            Button btnConn, Button btnDisc, TextBlock state)
+            Button? btnConn, Button? btnDisc, TextBlock state)
         {
             var sp = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
             sp.Children.Add(new TextBlock { Text = label + "  串口:", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Width = 78 });
@@ -147,8 +142,8 @@ namespace AgingTest.Views
                 sp.Children.Add(new TextBlock { Text = "从站:", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(10, 0, 0, 0) });
                 sp.Children.Add(slave);
             }
-            sp.Children.Add(btnConn);
-            sp.Children.Add(btnDisc);
+            if (btnConn != null) sp.Children.Add(btnConn);
+            if (btnDisc != null) sp.Children.Add(btnDisc);
             sp.Children.Add(state);
             return sp;
         }
@@ -170,14 +165,8 @@ namespace AgingTest.Views
         // ==================== 回填配置 ====================
         private void LoadConfigToUI()
         {
-            for (int i = 1; i <= DeviceComm.LoadCount; i++)
-            {
-                var rt = DeviceComm.Loads.FirstOrDefault(x => x.Cfg.DevId == i);
-                if (rt == null) continue;
-                _loadCom[i].Text = rt.Cfg.ComPort;
-                _loadBaud[i].Text = rt.Cfg.BaudRate.ToString();
-                _loadSlave[i].Text = rt.Cfg.SlaveAddr.ToString();
-            }
+            _loadCom[1].Text = DeviceComm.LoadPort.Cfg.ComPort;
+            _loadBaud[1].Text = DeviceComm.LoadPort.Cfg.Baud.ToString();
             for (int i = 1; i <= DeviceComm.RrPortCount; i++)
             {
                 _rrCom[i].Text = DeviceComm.RrPorts[i - 1].Cfg.ComPort;
@@ -200,14 +189,8 @@ namespace AgingTest.Views
         {
             try
             {
-                for (int i = 1; i <= DeviceComm.LoadCount; i++)
-                {
-                    var rt = DeviceComm.Loads.FirstOrDefault(x => x.Cfg.DevId == i);
-                    if (rt == null) continue;
-                    rt.Cfg.ComPort = _loadCom[i].Text.Trim();
-                    if (int.TryParse(_loadBaud[i].Text, out int b)) rt.Cfg.BaudRate = b;
-                    if (byte.TryParse(_loadSlave[i].Text, out byte sa)) rt.Cfg.SlaveAddr = sa;
-                }
+                DeviceComm.LoadPort.Cfg.ComPort = _loadCom[1].Text.Trim();
+                if (int.TryParse(_loadBaud[1].Text, out int lb)) DeviceComm.LoadPort.Cfg.Baud = lb;
                 for (int i = 1; i <= DeviceComm.RrPortCount; i++)
                 {
                     var cfg = DeviceComm.RrPorts[i - 1].Cfg;
@@ -236,15 +219,22 @@ namespace AgingTest.Views
         }
 
         // ==================== 连接/断开 ====================
-        private void BtnLoadConnect_Click(object sender, RoutedEventArgs e)
+        private void BtnLoadBusConnect_Click(object sender, RoutedEventArgs e)
         {
-            int id = (int)((Button)sender).Tag;
-            var err = DeviceComm.ConnectLoad(id);
-            if (err != null) MessageBox.Show(err, "连接失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-            else RefreshStates();
+            var errors = new List<string>();
+            for (int i = 1; i <= DeviceComm.LoadCount; i++)
+            {
+                var err = DeviceComm.ConnectLoad(i);
+                if (err != null) errors.Add(err);
+            }
+            RefreshStates();
+            if (errors.Count > 0) MessageBox.Show(string.Join("\n", errors), "负载连接", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-        private void BtnLoadDisconnect_Click(object sender, RoutedEventArgs e)
-            => DeviceComm.DisconnectLoad((int)((Button)sender).Tag);
+        private void BtnLoadBusDisconnect_Click(object sender, RoutedEventArgs e)
+        {
+            for (int i = 1; i <= DeviceComm.LoadCount; i++) DeviceComm.DisconnectLoad(i);
+            RefreshStates();
+        }
 
         private void BtnRrConnect_Click(object sender, RoutedEventArgs e)
         {
@@ -296,11 +286,7 @@ namespace AgingTest.Views
         // ==================== 状态刷新 ====================
         private void RefreshStates()
         {
-            for (int i = 1; i <= DeviceComm.LoadCount; i++)
-            {
-                var rt = DeviceComm.Loads.FirstOrDefault(x => x.Cfg.DevId == i);
-                SetStateText(_loadState[i], rt?.Connected == true);
-            }
+            SetStateText(_loadPortState, DeviceComm.LoadPort.Connected);
             for (int i = 1; i <= DeviceComm.RrPortCount; i++)
                 SetStateText(_rrState[i], DeviceComm.RrPorts[i - 1].Connected);
             for (int i = 1; i <= DeviceComm.N36100Count; i++)

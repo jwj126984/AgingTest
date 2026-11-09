@@ -56,10 +56,24 @@ namespace AgingTest.Views
             catch (Exception ex) { Log($"设定{name}失败：" + ex.Message); }
         }
 
-        private void BtnSetVolt_Click(object sender, RoutedEventArgs e) => SetParam("输出电压", Pwr.SetVoltage, TxtVolt.Text);
-        private void BtnSetCurr_Click(object sender, RoutedEventArgs e) => SetParam("输出电流", Pwr.SetCurrent, TxtCurr.Text);
+        private void BtnSetVolt_Click(object sender, RoutedEventArgs e) => ApplyVoltCurr();
+        private void BtnSetCurr_Click(object sender, RoutedEventArgs e) => ApplyVoltCurr();
         private void BtnSetPow_Click(object sender, RoutedEventArgs e) => SetParam("恒功率", Pwr.SetPower, TxtPow.Text);
         private void BtnSetVoltLim_Click(object sender, RoutedEventArgs e) => SetParam("电压上限", Pwr.SetVoltLimit, TxtVoltLim.Text);
+
+        // 用 :APPLy <v>,<a> 同时下发电压和电流（文档 3.2.1）
+        private void ApplyVoltCurr()
+        {
+            if (!Pwr.IsConnected) { Log("未连接，请先在通讯设置中连接"); return; }
+            try
+            {
+                double v = double.Parse(TxtVolt.Text.Trim());
+                double a = double.Parse(TxtCurr.Text.Trim());
+                Pwr.Apply(v, a);
+                Log($"设定输出 {v}V / {a}A 完成");
+            }
+            catch (Exception ex) { Log("设定输出失败：" + ex.Message); }
+        }
 
         private void BtnOutOn_Click(object sender, RoutedEventArgs e)
         {
@@ -82,16 +96,18 @@ namespace AgingTest.Views
         private void BtnModeCc_Click(object sender, RoutedEventArgs e)
         {
             if (!Pwr.IsConnected) { Log("未连接"); return; }
-            try { Pwr.SetMode("CC"); Log("已设为 CC 优先"); } catch (Exception ex) { Log("设模式失败：" + ex.Message); }
+            try { Pwr.SetMode("0"); Log("已设为 CC 优先"); } catch (Exception ex) { Log("设模式失败：" + ex.Message); }
         }
 
         private void RefreshMeasure()
         {
             try
             {
-                var v = Pwr.MeasVoltage();
-                var a = Pwr.MeasCurrent();
-                var w = Pwr.MeasPower();
+                // :MEAS:VAP? 一次返回 电压,电流,功率，分隔符兼容逗号/空格
+                var parts = Pwr.MeasVap().Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                double v = parts.Length > 0 && double.TryParse(parts[0].Trim(), out var dv) ? dv : double.NaN;
+                double a = parts.Length > 1 && double.TryParse(parts[1].Trim(), out var da) ? da : double.NaN;
+                double w = parts.Length > 2 && double.TryParse(parts[2].Trim(), out var dw) ? dw : double.NaN;
                 TxtMeasV.Text = double.IsNaN(v) ? "—" : v.ToString("0.0000");
                 TxtMeasA.Text = double.IsNaN(a) ? "—" : a.ToString("0.0000");
                 TxtMeasW.Text = double.IsNaN(w) ? "—" : w.ToString("0.0000");

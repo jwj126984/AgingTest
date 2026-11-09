@@ -63,6 +63,7 @@
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="TbDev1Status" Text="设备状态：未连接" Foreground="#DC3545" FontSize="13" VerticalAlignment="Center"/>
+                        <Button Content="采集" Margin="16,0,0,0" Padding="12,2" FontSize="12" Click="BtnReadDev1_Click"/>
                     </StackPanel>
                     <TextBlock Text="32通道实时采集(电压/电流)" Margin="0,6,0,10" FontSize="12" Foreground="#4B5563"/>
                     <WrapPanel x:Name="WrapDev1Data" Margin="0,4"/>
@@ -74,6 +75,7 @@
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="TbDev2Status" Text="设备状态：未连接" Foreground="#DC3545" FontSize="13" VerticalAlignment="Center"/>
+                        <Button Content="采集" Margin="16,0,0,0" Padding="12,2" FontSize="12" Click="BtnReadDev2_Click"/>
                     </StackPanel>
                     <TextBlock Text="32通道实时采集(电压/电流)" Margin="0,6,0,10" FontSize="12" Foreground="#4B5563"/>
                     <WrapPanel x:Name="WrapDev2Data" Margin="0,4"/>

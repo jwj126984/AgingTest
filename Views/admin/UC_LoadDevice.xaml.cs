@@ -17,20 +17,12 @@ namespace AgingTest.Views
     /// </summary>
     public partial class UC_LoadDevice : UserControl
     {
-        private readonly DispatcherTimer[] _devTimers = new DispatcherTimer[5];
-
         public UC_LoadDevice()
         {
             InitializeComponent();
             // 配置与运行时由 MainWindow 启动时的 DeviceComm.LoadSettings() 统一加载，
             // 此处不要再调 LoadSettings()，否则会清空 Loads 重建，丢失已连接的句柄。
             DeviceComm.StateChanged += DeviceComm_StateChanged;
-            for (int i = 1; i <= DeviceComm.LoadCount; i++)
-            {
-                _devTimers[i] = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-                int devId = i;
-                _devTimers[i].Tick += (_, _) => AutoReadData(devId);
-            }
             RefreshStates();
             RenderAllChannels();
         }
@@ -44,7 +36,7 @@ namespace AgingTest.Views
             else Dispatcher.Invoke(RefreshStates);
         }
 
-        /// <summary>刷新设备连接状态文字，并启停对应自动采集定时器。</summary>
+        /// <summary>刷新设备连接状态文字（采集改为按钮手动触发，不再定时轮询）。</summary>
         private void RefreshStates()
         {
             for (int i = 1; i <= DeviceComm.LoadCount; i++)
@@ -58,14 +50,6 @@ namespace AgingTest.Views
                     tb.Foreground = conn
                         ? new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45))
                         : new SolidColorBrush(Color.FromRgb(0xDC, 0x35, 0x45));
-                }
-                if (conn)
-                {
-                    if (!_devTimers[i].IsEnabled) _devTimers[i].Start();
-                }
-                else
-                {
-                    _devTimers[i].Stop();
                 }
             }
         }
@@ -107,14 +91,17 @@ namespace AgingTest.Views
             }
         }
 
-        /// <summary>定时自动采集：读取32通道实时数据并渲染。</summary>
+        /// <summary>按钮手动采集：读取32通道实时数据并渲染。</summary>
+        private void BtnReadDev1_Click(object sender, RoutedEventArgs e) => AutoReadData(1);
+        private void BtnReadDev2_Click(object sender, RoutedEventArgs e) => AutoReadData(2);
+
         private void AutoReadData(int devId)
         {
             var rt = GetRuntime(devId);
             var wrapPanel = GetDevWrapPanel(devId);
             if (wrapPanel == null || rt == null || !rt.Connected || rt.Handle == null)
             {
-                _devTimers[devId].Stop();
+                MessageBox.Show($"负载{devId}未连接，请先在通讯设置中连接", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             try
@@ -136,14 +123,13 @@ namespace AgingTest.Views
             }
             catch (Exception ex)
             {
-                _devTimers[devId].Stop();
                 var tb = GetDevStatusTb(devId);
                 if (tb != null)
                 {
                     tb.Text = "设备状态：通信异常";
                     tb.Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0x35, 0x45));
                 }
-                MessageBox.Show($"设备{devId}自动采集失败：{ex.Message}\n已停止自动刷新", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show($"设备{devId}采集失败：{ex.Message}", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -250,10 +236,9 @@ namespace AgingTest.Views
                 _ => null
             };
 
-        // 连接由 DeviceComm 统一管理，本页卸载时仅停止采集定时器、取消订阅，不断开设备连接
+        // 连接由 DeviceComm 统一管理，本页卸载时仅取消订阅，不断开设备连接
         private void UserControl_Unloaded(object sender, RoutedEventArgs e)
         {
-            for (int i = 1; i <= DeviceComm.LoadCount; i++) _devTimers[i]?.Stop();
             DeviceComm.StateChanged -= DeviceComm_StateChanged;
         }
     }

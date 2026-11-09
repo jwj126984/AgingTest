@@ -16,7 +16,6 @@ namespace AgingTest.Views
     {
         private int Index => (int)CmbDev.SelectedItem;
         private N36100PowerClient Pwr => DeviceComm.N36100[Index - 1].Client;
-        private readonly System.Windows.Threading.DispatcherTimer _timer;
 
         public UC_N36100Power()
         {
@@ -24,12 +23,7 @@ namespace AgingTest.Views
             CmbDev.ItemsSource = Enumerable.Range(1, DeviceComm.N36100Count).ToList();
             CmbDev.SelectedIndex = 0;
             CmbDev.SelectionChanged += (_, _) => RefreshConnState();
-            _timer = new System.Windows.Threading.DispatcherTimer
-            {
-                Interval = TimeSpan.FromMilliseconds(500)
-            };
-            _timer.Tick += (_, _) => { if (IsVisible && Pwr.IsConnected) RefreshMeasure(); };
-            _timer.Start();
+            // 回读改为按钮手动触发，不在 UI 线程定时同步 TCP 查询（避免界面卡顿）
             DeviceComm.StateChanged += DeviceComm_StateChanged;
             RefreshConnState();
         }
@@ -153,7 +147,6 @@ namespace AgingTest.Views
 
         private void UserControl_Unloaded(object sender, RoutedEventArgs e)
         {
-            _timer.Stop();
             DeviceComm.StateChanged -= DeviceComm_StateChanged;
         }
     }

@@ -36,11 +36,6 @@ namespace AgingTest
         private WorkStation? _pendingStation;   // 已扫描工位码、等待产品码的工位
         private readonly UserInfo _currentUser;
 
-        private const int MaxChannel = 8;
-
-        private volatile bool _recvRunning = false;
-        private Thread? _recvThread;
-
         private static string HexString(byte[] data) => string.Join(" ", data.Select(b => b.ToString("X2")));
 
 
@@ -190,12 +185,9 @@ namespace AgingTest
                         }
                     }
 
-                    // 全部设备处理完成，只启动一次接收线程
-                    if (!_recvRunning)
-                    {
-                        StartReceiveThread();
-                        AddLog("接收线程已启动");
-                    }
+                    // 接收线程由 CanComm 在通道启动成功后自动拉起，这里只做一次兜底
+                    CanComm.EnsureReceiveLoop();
+                    AddLog("接收线程已启动");
                     AddLog("====全部CAN卡批量打开流程执行完毕====");
                 }
                 catch (Exception ex)
@@ -210,93 +202,6 @@ namespace AgingTest
         }
 
 
-
-
-
-
-        private void StartReceiveThread()
-        {
-            if (_recvRunning) return;
-            _recvRunning = true;
-            _recvThread = new Thread(ReceiveLoop) { IsBackground = true };
-            _recvThread.Start();
-        }
-
-
-        private void ReceiveLoop()
-        {
-            var rxCan = new ZlgCan.ZCAN_Receive_Data[256];
-            var rxFd = new ZlgCan.ZCAN_ReceiveFD_Data[256];
-            int canSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
-            int fdSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_ReceiveFD_Data));
-            IntPtr ptrCan = Marshal.AllocHGlobal(canSize * rxCan.Length);
-            IntPtr ptrFd = Marshal.AllocHGlobal(fdSize * rxFd.Length);
-            try
-            {
-                while (_recvRunning)
-                {
-                    bool anyStarted = false;
-                    // 遍历全部CAN设备（快照避免与连接/断开并发增删冲突）
-                    foreach (var dev in CanComm.Cards.ToList())
-                    {
-                        // 遍历该设备8个通道 ch0~ch7
-                        for (int ch = 0; ch < MaxChannel; ch++)
-                        {
-                            // 替换原来的 !_started[ch]
-                            if (!dev.ChannelStarted[ch])
-                                continue;
-
-                            anyStarted = true;
-                            IntPtr h = dev.ChannelHandles[ch];
-                            try
-                            {
-                                // ---- CAN 帧接收（type 0）----
-                                uint cnt = ZlgCan.ZCAN_GetReceiveNum(h, 0);
-                                while (_recvRunning && cnt > 0)
-                                {
-                                    uint r = ZlgCan.ZCAN_Receive(h, ptrCan, (uint)Math.Min(cnt, 256), 10);
-                                    if (r == 0) break;
-                                    for (uint k = 0; k < r; k++)
-                                    {
-                                        IntPtr p = ptrCan + (int)k * canSize;
-                                        var frame = Marshal.PtrToStructure<ZlgCan.ZCAN_Receive_Data>(p);
-                                        CanComm.RaiseFrameReceived(dev.CanIndex, ch, frame.frame.can_id, frame.frame.data, frame.frame.can_dlc, false);
-                                    }
-                                    cnt -= r;
-                                }
-
-                                // ---- CANFD 帧接收（type 1）----
-                                uint cntFd = ZlgCan.ZCAN_GetReceiveNum(h, 1);
-                                while (_recvRunning && cntFd > 0)
-                                {
-                                    uint rFd = ZlgCan.ZCAN_ReceiveFD(h, ptrFd, (uint)Math.Min(cntFd, 256), 10);
-                                    if (rFd == 0) break;
-                                    for (uint k = 0; k < rFd; k++)
-                                    {
-                                        IntPtr pFd = ptrFd + (int)k * fdSize;
-                                        var ffd = Marshal.PtrToStructure<ZlgCan.ZCAN_ReceiveFD_Data>(pFd);
-                                        CanComm.RaiseFrameReceived(dev.CanIndex, ch, ffd.frame.can_id, ffd.frame.data, ffd.frame.len, true);
-                                    }
-                                    cntFd -= rFd;
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                AddLog($"【CAN{dev.CanIndex} CH{ch}】接收异常：{ex.Message}");
-                            }
-                        }
-                    }
-                    // 有通道启用时用短休眠控制轮询频率，避免忙等占用整核CPU；无通道启用时进一步降频
-                    Thread.Sleep(anyStarted ? 5 : 50);
-                }
-            }
-            finally
-            {
-                // 释放非托管内存，防止内存泄漏
-                Marshal.FreeHGlobal(ptrCan);
-                Marshal.FreeHGlobal(ptrFd);
-            }
-        }
 
 
 

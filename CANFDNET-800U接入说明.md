@@ -52,22 +52,35 @@ ZCAN_CloseDevice
 3. 点「断开」调用 `ZCAN_CloseDevice`，8 个通道一并释放。
 4. 连接成功后 IP / 端口 / 协议自动写回 `Config.json`（保留 `GjdaDevices`、`Comm` 分区），下次启动由 `ReadFullConfig` 自动连接。
 
-## 5. 常见失败原因
+## 5. 收发监视（硬件控制 → CAN-800H 调试）
+
+- 取帧线程归 `CanComm` 所有：任一通道 `ZCAN_StartCAN` 成功后自动启动（`EnsureReceiveLoop`），
+  因此从「通讯设置」连接或主界面批量连接，监视界面都能收到帧；不再依赖 `ReadFullConfig` 的启动时机。
+- 轮询逻辑：每通道先 `ZCAN_GetReceiveNum(h,0/1)`，再 `ZCAN_Receive / ZCAN_ReceiveFD`（每次最多 256 帧，每轮最多 8 批），
+  通道间 `Sleep 5ms`，无通道时 `50ms`。
+- **发送回显**：`CanComm.Send` 成功后调用 `RaiseFrameSent`，同一帧带 `IsTx=true` 广播，
+  监视列表「方向」列显示「发送 / 接收」，因此本机发出的帧与总线收到的帧都在同一张表里。
+- 列表最多保留 1000 帧并自动滚到最新；计数器分「接收 / 发送」累计；「仅显示当前卡/通道」勾选后按 `卡+通道` 过滤。
+- 页面顶部同时显示「通道已启动/未启动 · 接收线程运行中/未运行」，便于判断是没连上还是没取帧。
+
+## 6. 常见失败原因
 
 | 现象 | 排查 |
 | --- | --- |
 | 打开设备失败，句柄为 0 | 类型号与实际工作模式不一致（TCP 57 / UDP 58）；索引错；IP 不在同网段；`zlgcan.dll` 未放在 exe 同目录 |
 | 网络参数设置失败 | 该通道在设备端未使能转发配置，或端口被占用；服务器模式需确认 PC 端口未被防火墙拦截 |
 | 通道启动失败返回 0x0200 | 打开设备错误；先用「设备信息」确认设备在线 |
-| 收发无数据 | 协议（CAN/CANFD）必须与设备端「控制器类型」一致；波特率在设备端设置，需与总线上其它节点一致 |
+| 收发无数据 | 先看调试页「接收线程」是否运行中；协议（CAN/CANFD）必须与设备端「控制器类型」一致；波特率在设备端设置，需与总线上其它节点一致 |
+| 能发不能收 | 设备端波特率/终端电阻与总线不匹配；通道处于只听模式；或另一端未上电 |
 | CANFD 通道异常/崩溃 | 确认使用 CANFD 专用初始化结构体（本工程已修正） |
 
-## 6. 改动文件
+## 7. 改动文件
 
 | 文件 | 说明 |
 | --- | --- |
 | `Models/ZlgCan.cs` | SDK 封装：类型号常量、CAN/CANFD 两套 InitCAN 结构体、设备信息、错误码翻译、DLL 缺失提示 |
-| `Models/CanComm.cs` | 初始化逻辑：`ConnectCard(ip, 端口)` 一次完成 打开设备→逐通道下发参数→InitCAN→StartCAN；另含单通道启停、整卡批量启动 |
+| `Models/CanComm.cs` | 初始化逻辑：`ConnectCard(ip, 端口)` 一次完成 打开设备→逐通道下发参数→InitCAN→StartCAN；另含单通道启停、整卡批量启动；内置帧接收线程与发送回显 |
+| `Views/UC_CanDebug.xaml(.cs)` | 调试页：收发帧列表（方向/卡/通道/ID/类型/长度/数据）、接收与发送计数、按卡+通道过滤 |
 | `Models/Config.cs` | `CanChannelItem`（每通道 IP/端口/协议/模式）、`CanCardItem.BasePort`（起始端口）、旧配置兼容补齐 |
 | `Views/admin/UC_CanZlg800H.xaml(.cs)` | 连接页：每盒只填 IP + 端口号，连接/断开 + 状态；协议全局选择（已移除设备搜索、设备管理、逐通道启动） |
 | `MainWindow.xaml.cs` | `ReadFullConfig` 按通道批量启动，全部失败时释放句柄 |

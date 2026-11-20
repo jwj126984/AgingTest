@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace AgingTest.Models
 {
@@ -59,16 +60,18 @@ namespace AgingTest.Models
             public bool IsExt { get; set; }       // 扩展帧
             public bool IsRemote { get; set; }    // 远程帧
             public bool IsFd { get; set; }        // CANFD
+            public bool IsTx { get; set; }        // true=本机发送，false=接收
             public byte[] Data { get; set; } = Array.Empty<byte>();
             public DateTime Time { get; set; }
 
             public string IdText => Id.ToString("X8");
             public string Kind => IsRemote ? "RTR" : (IsFd ? "CANFD" : "CAN");
+            public string DirText => IsTx ? "发送" : "接收";
             public int Len => Data.Length;
             public string DataText => string.Join(" ", Data.Select(b => b.ToString("X2")));
         }
 
-        /// <summary>接收帧广播（来自主界面接收线程）。</summary>
+        /// <summary>接收帧广播（来自本类内部接收线程）。</summary>
         public static event Action<CanFrameInfo>? FrameReceived;
         /// <summary>CAN 设备/通道状态变化。</summary>
         public static event Action? StateChanged;
@@ -253,6 +256,7 @@ namespace AgingTest.Models
                 rt.ChannelStarted[ch] = true;
                 rt.ChannelCanFd[ch] = cfg.IsCanFd;
                 rt.ChannelConfigs[ch] = cfg;
+                EnsureReceiveLoop();   // 通道一启动就开始取帧，与界面连接入口无关
                 log?.Invoke($"[CAN{canIndex}] 通道{ch} 启动成功 {(cfg.IsCanFd ? "CANFD" : "CAN")} " +
                            $"模式={(cfg.WorkMode == 1 ? "服务器" : "客户端")} {cfg.EndpointText}");
                 RaiseStateChanged();
@@ -449,6 +453,7 @@ namespace AgingTest.Models
         /// <summary>关闭全部设备（主窗口关闭时调用）。</summary>
         public static void Clear()
         {
+            _rxRunning = false;
             foreach (var c in Cards.ToList())
             {
                 if (c.DeviceHandle != IntPtr.Zero)
@@ -488,6 +493,7 @@ namespace AgingTest.Models
 
             try
             {
+                bool ok;
                 if (isFd)
                 {
                     var txf = new ZlgCan.ZCAN_TransmitFD_Data
@@ -502,7 +508,7 @@ namespace AgingTest.Models
                         transmit_type = 0
                     };
                     Array.Copy(data, txf.frame.data, Math.Min(data.Length, 64));
-                    return TransmitFD(h, ref txf);
+                    ok = TransmitFD(h, ref txf);
                 }
                 else
                 {
@@ -517,13 +523,35 @@ namespace AgingTest.Models
                         transmit_type = 0
                     };
                     Array.Copy(data, tx.frame.data, Math.Min(data.Length, 8));
-                    return Transmit(h, ref tx);
+                    ok = Transmit(h, ref tx);
                 }
+
+                // 发送成功则回显到监视列表（“收发报文”都能看到）
+                if (ok) RaiseFrameSent(canIndex, ch, id, data, isExt, isRemote, isFd);
+                return ok;
             }
             catch
             {
                 return false;
             }
+        }
+
+        /// <summary>把本机发出的帧广播给监视界面（IsTx = true）。</summary>
+        private static void RaiseFrameSent(int canIndex, int ch, uint id, byte[] data, bool isExt, bool isRemote, bool isFd)
+        {
+            var info = new CanFrameInfo
+            {
+                CanIndex = canIndex,
+                Channel = ch,
+                Id = id & 0x1FFFFFFF,
+                IsExt = isExt,
+                IsRemote = isRemote,
+                IsFd = isFd,
+                IsTx = true,
+                Data = isRemote ? Array.Empty<byte>() : data.ToArray(),
+                Time = DateTime.Now
+            };
+            FrameReceived?.Invoke(info);
         }
 
         private static bool Transmit(IntPtr ch, ref ZlgCan.ZCAN_Transmit_Data tx)
@@ -607,5 +635,101 @@ namespace AgingTest.Models
         /// <summary>便捷：帧数据十六进制文本。</summary>
         public static string FormatData(CanFrameInfo f)
             => string.Join(" ", f.Data.Select(b => b.ToString("X2")));
+
+        // ================================================================
+        // 接收线程（进程内单例：任意一台设备启动通道后自动开始取帧）
+        // ================================================================
+        private static readonly object RxLock = new();
+        private static volatile bool _rxRunning;
+        private static Thread? _rxThread;
+
+        /// <summary>接收线程是否在运行（界面诊断用）。</summary>
+        public static bool IsReceiveLoopRunning => _rxRunning;
+
+        /// <summary>
+        /// 启动帧接收线程（已运行则忽略）。连接/启动通道成功时自动调用，
+        /// 因此无论从「通讯设置」还是主界面批量连接，监视界面都能收到帧。
+        /// </summary>
+        public static void EnsureReceiveLoop()
+        {
+            if (_rxRunning) return;
+            lock (RxLock)
+            {
+                if (_rxRunning) return;
+                _rxRunning = true;
+                _rxThread = new Thread(ReceiveLoop) { IsBackground = true, Name = "CAN-Rx" };
+                _rxThread.Start();
+            }
+        }
+
+        /// <summary>轮询各设备各通道的 CAN / CANFD 待收帧并广播。</summary>
+        private static void ReceiveLoop()
+        {
+            var rxCan = new ZlgCan.ZCAN_Receive_Data[256];
+            var rxFd = new ZlgCan.ZCAN_ReceiveFD_Data[256];
+            int canSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_Receive_Data));
+            int fdSize = Marshal.SizeOf(typeof(ZlgCan.ZCAN_ReceiveFD_Data));
+            IntPtr ptrCan = Marshal.AllocHGlobal(canSize * rxCan.Length);
+            IntPtr ptrFd = Marshal.AllocHGlobal(fdSize * rxFd.Length);
+            try
+            {
+                while (_rxRunning)
+                {
+                    bool anyStarted = false;
+                    // 快照，避免与连接/断开并发增删冲突
+                    foreach (var dev in Cards.ToList())
+                    {
+                        for (int ch = 0; ch < ChannelCount; ch++)
+                        {
+                            if (!dev.ChannelStarted[ch]) continue;
+                            IntPtr h = dev.ChannelHandles[ch];
+                            if (h == IntPtr.Zero) continue;
+                            anyStarted = true;
+                            try
+                            {
+                                // ---- CAN 帧（type 0）----
+                                uint cnt = ZlgCan.ZCAN_GetReceiveNum(h, 0);
+                                for (int pass = 0; _rxRunning && cnt > 0 && pass < 8; pass++)
+                                {
+                                    uint want = Math.Min(cnt, 256u);
+                                    uint r = ZlgCan.ZCAN_Receive(h, ptrCan, want, 10);
+                                    if (r == 0) break;
+                                    for (uint k = 0; k < r; k++)
+                                    {
+                                        var frame = Marshal.PtrToStructure<ZlgCan.ZCAN_Receive_Data>(ptrCan + (int)k * canSize);
+                                        RaiseFrameReceived(dev.CanIndex, ch, frame.frame.can_id, frame.frame.data, frame.frame.can_dlc, false);
+                                    }
+                                    if (r < want) break;
+                                    cnt -= r;
+                                }
+
+                                // ---- CANFD 帧（type 1）----
+                                uint cntFd = ZlgCan.ZCAN_GetReceiveNum(h, 1);
+                                for (int pass = 0; _rxRunning && cntFd > 0 && pass < 8; pass++)
+                                {
+                                    uint want = Math.Min(cntFd, 256u);
+                                    uint r = ZlgCan.ZCAN_ReceiveFD(h, ptrFd, want, 10);
+                                    if (r == 0) break;
+                                    for (uint k = 0; k < r; k++)
+                                    {
+                                        var ffd = Marshal.PtrToStructure<ZlgCan.ZCAN_ReceiveFD_Data>(ptrFd + (int)k * fdSize);
+                                        RaiseFrameReceived(dev.CanIndex, ch, ffd.frame.can_id, ffd.frame.data, ffd.frame.len, true);
+                                    }
+                                    if (r < want) break;
+                                    cntFd -= r;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    Thread.Sleep(anyStarted ? 5 : 50);
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(ptrCan);
+                Marshal.FreeHGlobal(ptrFd);
+            }
+        }
     }
 }

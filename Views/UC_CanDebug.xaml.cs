@@ -72,13 +72,25 @@ namespace AgingTest.Views
             }
             if (_paused) return;
 
+            int curCard = CardIndex, curCh = Channel;
+            bool onlyCurrent = ChkOnlyCurrent.IsChecked == true;
+
             foreach (var f in batch)
             {
+                if (onlyCurrent && (f.CanIndex != curCard || f.Channel != curCh)) continue;
                 _frames.Add(f);
+                if (f.IsTx) _txTotal++; else _rxTotal++;
                 if (_frames.Count > MaxShown) _frames.RemoveAt(0);
             }
             TxtRecvCount.Text = _frames.Count.ToString();
+            TxtRxCount.Text = _rxTotal.ToString();
+            TxtTxCount.Text = _txTotal.ToString();
+            if (_frames.Count > 0)
+                DgFrames.ScrollIntoView(_frames[_frames.Count - 1]);
         }
+
+        private int _rxTotal;
+        private int _txTotal;
 
         // 鼠标位于页面任意子控件上方时，滚轮统一滚动外层 ScrollViewer（否则被 DataGrid 等子控件拦截）
         private void RootScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -98,7 +110,11 @@ namespace AgingTest.Views
             TxtOnline.Foreground = online
                 ? new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45))
                 : new SolidColorBrush(Color.FromRgb(0xDC, 0x35, 0x45));
-            TxtChState.Text = $"通道{Channel} {(started ? "已启动" : "未启动")}";
+            TxtChState.Text = $"通道{Channel} {(started ? "已启动" : "未启动")} · 接收线程" +
+                              (CanComm.IsReceiveLoopRunning ? "运行中" : "未运行");
+            TxtChState.Foreground = started && CanComm.IsReceiveLoopRunning
+                ? new SolidColorBrush(Color.FromRgb(0x28, 0xA7, 0x45))
+                : new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
         }
 
         // ==================== 发送 ====================
@@ -162,7 +178,11 @@ namespace AgingTest.Views
         private void BtnClearView_Click(object sender, RoutedEventArgs e)
         {
             _frames.Clear();
+            _rxTotal = 0;
+            _txTotal = 0;
             TxtRecvCount.Text = "0";
+            TxtRxCount.Text = "0";
+            TxtTxCount.Text = "0";
         }
 
         // ==================== 通道工具 ====================

@@ -110,15 +110,22 @@
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                         <Button x:Name="BtnToggleRecv" Content="暂停显示" Style="{StaticResource WarningButton}" Click="BtnToggleRecv_Click"/>
                         <Button Content="清空显示" Style="{StaticResource PrimaryButton}" Click="BtnClearView_Click" Margin="8,0,0,0"/>
+                        <CheckBox x:Name="ChkOnlyCurrent" Content="仅显示当前卡/通道" IsChecked="False"
+                                  VerticalAlignment="Center" Margin="12,0,0,0" FontSize="12"/>
                         <TextBlock Text="显示帧数:" VerticalAlignment="Center" Margin="16,0,0,0" FontSize="12"/>
                         <TextBlock x:Name="TxtRecvCount" Text="0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold"/>
-                        <TextBlock Text="（最多保留最近1000帧）" VerticalAlignment="Center" Foreground="#888" Margin="10,0,0,0" FontSize="11"/>
+                        <TextBlock Text="接收:" VerticalAlignment="Center" Margin="16,0,0,0" FontSize="12" Foreground="#2F6FED"/>
+                        <TextBlock x:Name="TxtRxCount" Text="0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="#2F6FED"/>
+                        <TextBlock Text="发送:" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="12" Foreground="#F27022"/>
+                        <TextBlock x:Name="TxtTxCount" Text="0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="#F27022"/>
+                        <TextBlock Text="（最多保留最近1000帧，含本机发送回显）" VerticalAlignment="Center" Foreground="#888" Margin="10,0,0,0" FontSize="11"/>
                     </StackPanel>
                     <DataGrid x:Name="DgFrames" Height="320" AutoGenerateColumns="False" IsReadOnly="True"
                               HeadersVisibility="Column" GridLinesVisibility="All" FontFamily="Consolas" FontSize="12"
                               Background="White" RowBackground="White" AlternatingRowBackground="#F7F9FC">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="时间" Binding="{Binding Time, StringFormat={}{0:HH:mm:ss.fff}}" Width="105"/>
+                            <DataGridTextColumn Header="方向" Binding="{Binding DirText}" Width="55"/>
                             <DataGridTextColumn Header="卡" Binding="{Binding CanIndex}" Width="45"/>
                             <DataGridTextColumn Header="通道" Binding="{Binding Channel}" Width="50"/>
                             <DataGridTextColumn Header="ID(hex)" Binding="{Binding IdText}" Width="90"/>
@@ -127,6 +134,8 @@
                             <DataGridTextColumn Header="数据" Binding="{Binding DataText}" Width="*"/>
                         </DataGrid.Columns>
                     </DataGrid>
+                    <TextBlock Text="通道已启动却长期无帧时：确认设备端波特率/终端电阻（ZCANPRO 网络配置，密码 88888），并检查总线接线与终端匹配。"
+                               FontSize="11" Foreground="#9AA3B2" Margin="0,6,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
             </GroupBox>
 

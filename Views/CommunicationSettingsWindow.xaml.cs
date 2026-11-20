@@ -37,6 +37,12 @@ namespace AgingTest.Views
         private readonly TextBox[] _n36600Port = new TextBox[DeviceComm.N36600Count + 1];
         private readonly TextBlock[] _n36600State = new TextBlock[DeviceComm.N36600Count + 1];
 
+        // 烘箱控制器（单台，Modbus TCP）
+        private TextBox? _ovenIp;
+        private TextBox? _ovenPort;
+        private TextBox? _ovenUnit;
+        private TextBlock? _ovenState;
+
         public CommunicationSettingsWindow()
         {
             InitializeComponent();
@@ -114,6 +120,24 @@ namespace AgingTest.Views
                 var btnDisc = MakeButton("断开", "DangerButton", i, BtnN36600Disconnect_Click);
                 N36600Panel.Children.Add(BuildNetRow($"N36600-{i}", ip, port, btnConn, btnDisc, state));
             }
+
+            // 烘箱控制器：IP + 端口 + 站号，连接动作内部完成建链与校验
+            _ovenIp = new TextBox { Style = (Style)FindResource("InputTextBox"), Width = 150 };
+            _ovenPort = new TextBox { Style = (Style)FindResource("InputTextBox"), Width = 70 };
+            _ovenUnit = new TextBox { Style = (Style)FindResource("InputTextBox"), Width = 50 };
+            _ovenState = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(14, 0, 0, 0) };
+
+            var spOven = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
+            spOven.Children.Add(new TextBlock { Text = "烘箱控制器  IP:", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Width = 110 });
+            spOven.Children.Add(_ovenIp);
+            spOven.Children.Add(new TextBlock { Text = "端口:", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(10, 0, 0, 0) });
+            spOven.Children.Add(_ovenPort);
+            spOven.Children.Add(new TextBlock { Text = "站号:", VerticalAlignment = VerticalAlignment.Center, FontSize = 12, Margin = new Thickness(10, 0, 0, 0) });
+            spOven.Children.Add(_ovenUnit);
+            spOven.Children.Add(MakeButton("连接", "SuccessButton", 0, BtnOvenConnect_Click));
+            spOven.Children.Add(MakeButton("断开", "DangerButton", 0, BtnOvenDisconnect_Click));
+            spOven.Children.Add(_ovenState);
+            OvenPanel.Children.Add(spOven);
         }
 
         private Button MakeButton(string content, string styleKey, int tag, RoutedEventHandler handler)
@@ -183,6 +207,13 @@ namespace AgingTest.Views
                 _n36600Ip[i].Text = DeviceComm.N36600[i - 1].Cfg.Ip;
                 _n36600Port[i].Text = DeviceComm.N36600[i - 1].Cfg.Port.ToString();
             }
+            if (_ovenIp != null)
+            {
+                var c = DeviceComm.Oven.Cfg;
+                _ovenIp.Text = c.Ip;
+                _ovenPort!.Text = c.Port.ToString();
+                _ovenUnit!.Text = c.UnitId.ToString();
+            }
         }
 
         // ==================== 保存 ====================
@@ -210,9 +241,15 @@ namespace AgingTest.Views
                     cfg.Ip = _n36600Ip[i].Text.Trim();
                     if (int.TryParse(_n36600Port[i].Text, out int p)) cfg.Port = p;
                 }
+                if (_ovenIp != null)
+                {
+                    var cfg = DeviceComm.Oven.Cfg;
+                    cfg.Ip = _ovenIp.Text.Trim();
+                    if (int.TryParse(_ovenPort!.Text, out int p)) cfg.Port = p;
+                    if (int.TryParse(_ovenUnit!.Text, out int u) && u >= 1 && u <= 247) cfg.UnitId = u;
+                }
                 DeviceComm.SaveCommSettings();
-                MessageBox.Show("通讯配置已保存到 Config.json", "保存成功", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
+                MessageBox.Show("通讯配置已保存到 Config.json", "保存成功", MessageBoxButton.OK, MessageBoxImage.Information);            }
             catch (Exception ex)
             {
                 MessageBox.Show("保存失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -267,6 +304,44 @@ namespace AgingTest.Views
         private void BtnN36600Disconnect_Click(object sender, RoutedEventArgs e)
             => DeviceComm.DisconnectN36600((int)((Button)sender).Tag);
 
+        // 烘箱控制器：连接按钮内部完成 参数校验 → TCP 建链 → 站号/地址通讯校验 → 保存配置
+        private void BtnOvenConnect_Click(object sender, RoutedEventArgs e)
+        {
+            if (_ovenIp == null) return;
+            if (!int.TryParse(_ovenPort!.Text.Trim(), out int port) || port <= 0)
+            {
+                MessageBox.Show("端口号无效，烘箱默认端口为 8000", "参数错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (!int.TryParse(_ovenUnit!.Text.Trim(), out int unit) || unit < 1 || unit > 247)
+            {
+                MessageBox.Show("站号需在 1~247 之间，烘箱默认为 1", "参数错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (_ovenIp.Text.Trim().Length == 0)
+            {
+                MessageBox.Show("请填写烘箱控制器 IP", "参数错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var err = DeviceComm.ConnectOven(_ovenIp.Text.Trim(), port, unit);
+            RefreshStates();
+            if (err != null)
+            {
+                MessageBox.Show(err, "连接失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            DeviceComm.SaveCommSettings();
+            MessageBox.Show($"烘箱控制器已连接（{DeviceComm.Oven.Cfg.Ip}:{DeviceComm.Oven.Cfg.Port}，站号 {DeviceComm.Oven.Cfg.UnitId}）",
+                "连接成功", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private void BtnOvenDisconnect_Click(object sender, RoutedEventArgs e)
+        {
+            DeviceComm.DisconnectOven();
+            RefreshStates();
+        }
+
         // ==================== 批量 ====================
         private void BtnConnectAll_Click(object sender, RoutedEventArgs e)
         {
@@ -294,6 +369,7 @@ namespace AgingTest.Views
                 SetStateText(_n36100State[i], DeviceComm.N36100[i - 1].Connected);
             for (int i = 1; i <= DeviceComm.N36600Count; i++)
                 SetStateText(_n36600State[i], DeviceComm.N36600[i - 1].Connected);
+            SetStateText(_ovenState, DeviceComm.Oven.Connected);
         }
 
         private static void SetStateText(TextBlock tb, bool connected)

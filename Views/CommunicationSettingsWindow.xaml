@@ -122,6 +122,14 @@
                     <StackPanel x:Name="N36600Panel"/>
                 </GroupBox>
 
+                <!-- 烘箱控制器（Modbus TCP） -->
+                <GroupBox Header="烘箱控制器（Modbus TCP 网口 · 单台 · 默认端口 8000 / 站号 1）" Style="{StaticResource GroupBoxStyle}">
+                    <StackPanel>
+                        <TextBlock Text="只填 IP / 端口 / 站号，点“连接”即完成 TCP 建链与站号通讯校验；温度分辨率 0.1℃，负温按补码下发。" FontSize="11" Foreground="#888" Margin="0,0,0,6"/>
+                        <StackPanel x:Name="OvenPanel"/>
+                    </StackPanel>
+                </GroupBox>
+
                 <!-- CAN 卡 ZLG-800H -->
                 <GroupBox Header="CAN 卡（ZLG-800H ×6 · 网口）" Style="{StaticResource GroupBoxStyle}">
                     <local:UC_CanZlg800H/>

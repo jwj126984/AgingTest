@@ -161,19 +161,26 @@ namespace AgingTest
 
                 try
                 {
-                    // 遍历每一张CAN卡配置（CanIndex 1~6），单卡失败不影响其它卡
+                    // 遍历每一张CAN设备配置（CanIndex 1~6），单卡失败不影响其它卡
                     foreach (var card in canCardItemList)
                     {
                         try
                         {
-                            if (string.IsNullOrWhiteSpace(card.IpAddress))
+                            var channels = card.EnsureChannels();
+                            var enabled = channels.Where(c => c.Enabled).ToList();
+                            if (enabled.Count == 0)
                             {
-                                AddLog($"【CAN{card.CanIndex}】IP配置为空，跳过该卡");
+                                AddLog($"【CAN{card.CanIndex}】没有任何启用通道，跳过该设备");
+                                continue;
+                            }
+                            if (enabled.All(c => string.IsNullOrWhiteSpace(c.IpAddress)) && card.WorkMode == 0)
+                            {
+                                AddLog($"【CAN{card.CanIndex}】通道 IP 配置为空，跳过该设备");
                                 continue;
                             }
                             var (ok, err) = CanComm.OpenCard(card.CanIndex, card, AddLog);
                             AddLog($"【CAN{card.CanIndex}】{err}");
-                            if (!ok) AddLog($"【CAN{card.CanIndex}】连接失败，继续下一张卡");
+                            if (!ok) AddLog($"【CAN{card.CanIndex}】连接失败，继续下一台设备");
                             // 泵一次 UI 消息，保持窗口在批量连接期间可响应
                             Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
                         }

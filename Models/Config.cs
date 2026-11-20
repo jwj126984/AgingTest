@@ -51,11 +51,93 @@ namespace AgingTest.Models
     #endregion
 
     #region CAN卡实体
+    /// <summary>
+    /// CANFDNET-800U 单通道启动参数（对应 ZCANPRO「启动」界面，以及手册 3.3.7 的 n/work_mode、n/ip、n/work_port、n/local_port 属性）。
+    /// 800H 一台设备 8 个通道，每通道是独立的网络连接，因此每个通道都要单独配置、单独启动。
+    /// </summary>
+    public class CanChannelItem
+    {
+        /// <summary>通道号 0~7</summary>
+        public int ChannelIndex { get; set; }
+
+        /// <summary>是否参与启动（连接时跳过未勾选通道）</summary>
+        public bool Enabled { get; set; } = true;
+
+        /// <summary>目标设备 IP（客户端模式生效）</summary>
+        public string IpAddress { get; set; } = "192.168.0.10";
+
+        /// <summary>工作模式：0=客户端（PC 连设备），1=服务器（PC 监听）</summary>
+        public int WorkMode { get; set; }
+
+        /// <summary>本地端口（服务器 / UDP 模式生效）</summary>
+        public int LocalPort { get; set; } = 4001;
+
+        /// <summary>工作端口（客户端模式生效，即设备该通道的监听端口）</summary>
+        public int WorkPort { get; set; } = 4001;
+
+        /// <summary>协议：false=CAN，true=CANFD（对应 InitCAN 的 can_type）</summary>
+        public bool IsCanFd { get; set; }
+
+        /// <summary>CANFD 加速：0=否，1=是（发送帧 flags 第 0 位）</summary>
+        public int CanFdAcc { get; set; }
+
+        /// <summary>只听模式：1=只听（控制器不发任何数据，含应答位）</summary>
+        public bool ListenOnly { get; set; }
+
+        /// <summary>端口显示，便于日志/界面展示。</summary>
+        public string EndpointText => WorkMode == 1 ? $"本地端口 {LocalPort}" : $"{IpAddress}:{WorkPort}";
+    }
+
     /// <summary>NetCAN800H单张CAN卡配置实体</summary>
     public class CanCardItem
     {
         /// <summary>CAN卡索引编号（1~6）</summary>
         public int CanIndex { get; set; }
+
+        /// <summary>设备类型名称，对应「设备管理」类型下拉：CANFDNET-800U-TCP / CANFDNET-800U-UDP</summary>
+        public string DeviceType { get; set; } = "CANFDNET-800U-TCP";
+
+        /// <summary>设备索引（ZCAN_OpenDevice 的 device_index），-1 表示沿用 CanIndex-1</summary>
+        public int DeviceIndex { get; set; } = -1;
+
+        /// <summary>8 个通道的启动参数</summary>
+        public List<CanChannelItem> Channels { get; set; } = new List<CanChannelItem>();
+
+        /// <summary>起始端口（通道0端口），通道 n 的端口 = BasePort + n，默认 4001</summary>
+        public int BasePort { get; set; } = 4001;
+
+        /// <summary>设备类型号：CANFDNET-800U TCP=57，UDP=58（手册附录1，表4.1）</summary>
+        public uint DeviceTypeCode => (DeviceType ?? "").Contains("UDP", StringComparison.OrdinalIgnoreCase) ? 58u : 57u;
+
+        /// <summary>实际使用的设备索引。</summary>
+        public int ResolvedDeviceIndex => DeviceIndex >= 0 ? DeviceIndex : CanIndex - 1;
+
+        /// <summary>
+        /// 补齐 8 个通道配置：缺失通道按卡片级旧字段派生，默认通道 n 的端口为 4001+n（ZLG 设备默认通道端口）。
+        /// 兼容旧 Config.json（旧文件只有卡片级 IpAddress/WorkMode/LocalPort/RemotePort）。
+        /// </summary>
+        public List<CanChannelItem> EnsureChannels(int count = 8)
+        {
+            if (Channels == null) Channels = new List<CanChannelItem>();
+            for (int ch = 0; ch < count; ch++)
+            {
+                if (Channels.Any(c => c.ChannelIndex == ch)) continue;
+                Channels.Add(new CanChannelItem
+                {
+                    ChannelIndex = ch,
+                    Enabled = true,
+                    IpAddress = string.IsNullOrWhiteSpace(IpAddress) ? "192.168.0.10" : IpAddress,
+                    WorkMode = WorkMode,
+                    LocalPort = BasePort + ch,
+                    WorkPort = BasePort + ch,
+                    IsCanFd = IsCanFd,
+                    CanFdAcc = CanFdAcc,
+                    ListenOnly = ListenOnly
+                });
+            }
+            Channels.Sort((a, b) => a.ChannelIndex.CompareTo(b.ChannelIndex));
+            return Channels;
+        }
 
         /// <summary>设备是否已经连接</summary>
         public bool IsConnected { get; set; }

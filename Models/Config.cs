@@ -33,6 +33,22 @@ namespace AgingTest.Models
 
         /// <summary>高精度程控电源 N36600 设备（6台，各自独立IP/端口）。</summary>
         public List<NetDeviceSetting> N36600 { get; set; } = new List<NetDeviceSetting>();
+
+        /// <summary>烘箱控制器（Modbus TCP Server，网口）。</summary>
+        public OvenSetting Oven { get; set; } = new OvenSetting();
+    }
+
+    /// <summary>
+    /// 烘箱控制器网口参数（依据《X4MCGSLDETYA120MV104.05WA通讯协议》Modbus Server）。
+    /// 触摸屏/控制器默认 IP 与电脑同网段（例 192.168.1.10），端口默认 8000，站号 1。
+    /// </summary>
+    public class OvenSetting
+    {
+        public string Ip { get; set; } = "192.168.1.10";
+        public int Port { get; set; } = 8000;
+        /// <summary>Modbus 从站地址（报文中的设备地址码，默认 1）</summary>
+        public int UnitId { get; set; } = 1;
+        public bool Enabled { get; set; } = true;
     }
 
     /// <summary>485总线串口设置（电阻/继电器板共用）。</summary>

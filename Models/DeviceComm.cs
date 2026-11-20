@@ -77,10 +77,18 @@ namespace AgingTest.Models
             public N36600PowerClient Client { get; } = new();
             public bool Connected => Client.IsConnected;
         }
+        public class OvenDevice
+        {
+            public OvenSetting Cfg { get; set; } = new();
+            public OvenController Client { get; } = new();
+            public bool Connected => Client.IsConnected;
+        }
         /// <summary>大电流程控电源（6台）。</summary>
         public static readonly List<N36100Device> N36100 = new();
         /// <summary>高精度程控电源（6台）。</summary>
         public static readonly List<N36600Device> N36600 = new();
+        /// <summary>烘箱控制器（Modbus TCP 网口，单台）。</summary>
+        public static readonly OvenDevice Oven = new();
 
         /// <summary>任一设备连接状态变化时触发。</summary>
         public static event Action? StateChanged;
@@ -91,7 +99,8 @@ namespace AgingTest.Models
             Loads.Any(l => l.Connected)
             || RrPorts.Any(p => p.Connected)
             || N36100.Any(d => d.Connected)
-            || N36600.Any(d => d.Connected);
+            || N36600.Any(d => d.Connected)
+            || Oven.Connected;
 
         /// <summary>取某 485 总线上某电阻卡的 Modbus 客户端（已设从站地址）。portIndex=1~6, addr=1~4。</summary>
         public static ModbusRtuClient ResistorMb(int portIndex, int addr)
@@ -181,6 +190,10 @@ namespace AgingTest.Models
                 }
                 N36600.Add(new N36600Device { Cfg = cfg });
             }
+
+            // 烘箱控制器（Modbus TCP，单台）
+            Root.Comm.Oven ??= new OvenSetting();
+            Oven.Cfg = Root.Comm.Oven;
         }
 
         /// <summary>确保至少 2 台电子负载配置记录存在。</summary>
@@ -329,6 +342,43 @@ namespace AgingTest.Models
         }
 
         // ================================================================
+        // 烘箱控制器（Modbus TCP 网口，单台）
+        // ================================================================
+        /// <summary>
+        /// 连接烘箱控制器：TCP 建链 → 回读一次运行状态(7990) 做通讯校验。
+        /// 传入 ip/port/unitId 时同步写回运行时配置（对应“通讯设置里只填 IP 和端口，其余封装进连接按钮”）。
+        /// 返回 null 表示成功，否则返回失败原因。
+        /// </summary>
+        public static string? ConnectOven(string? ip = null, int? port = null, int? unitId = null)
+        {
+            if (ip != null && ip.Trim().Length > 0) Oven.Cfg.Ip = ip.Trim();
+            if (port is > 0) Oven.Cfg.Port = port.Value;
+            if (unitId is > 0 and <= 247) Oven.Cfg.UnitId = unitId.Value;
+
+            if (Oven.Connected) return null;
+            try
+            {
+                Oven.Client.Connect(Oven.Cfg.Ip, Oven.Cfg.Port, Oven.Cfg.UnitId);
+                // 通讯校验：读运行状态寄存器，地址/站号/端口有任何不对都会抛出异常
+                Oven.Client.Modbus.ReadHoldingRegisters(OvenController.RegRunStatus, 1);
+                RaiseStateChanged();
+                return null;
+            }
+            catch (Exception ex)
+            {
+                try { Oven.Client.Disconnect(); } catch { }
+                RaiseStateChanged();
+                return $"烘箱控制器 {Oven.Cfg.Ip}:{Oven.Cfg.Port}（站号 {Oven.Cfg.UnitId}）连接失败：{ex.Message}";
+            }
+        }
+
+        public static void DisconnectOven()
+        {
+            try { Oven.Client.Disconnect(); } catch { }
+            RaiseStateChanged();
+        }
+
+        // ================================================================
         // 批量连接/断开
         // ================================================================
         /// <summary>连接全部被控设备（2负载 + 6个485 + 6+6电源）。返回错误信息列表。</summary>
@@ -355,6 +405,11 @@ namespace AgingTest.Models
                 var e = ConnectN36600(i);
                 if (e != null) errors.Add(e);
             }
+            if (Oven.Cfg.Enabled)
+            {
+                var e = ConnectOven();
+                if (e != null) errors.Add(e);
+            }
             return errors;
         }
 
@@ -365,6 +420,7 @@ namespace AgingTest.Models
             for (int i = 1; i <= RrPortCount; i++) DisconnectRrPort(i);
             for (int i = 1; i <= N36100Count; i++) DisconnectN36100(i);
             for (int i = 1; i <= N36600Count; i++) DisconnectN36600(i);
+            DisconnectOven();
         }
     }
 }

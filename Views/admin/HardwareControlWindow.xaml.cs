@@ -52,6 +52,7 @@ namespace AgingTest.Views
             DotResistor.Fill = rr ? BrushOnline : BrushOffline;
             DotRelay.Fill = rr ? BrushOnline : BrushOffline;
             DotCan.Fill = CanComm.Cards.Any(c => c.IsOnline) ? BrushOnline : BrushOffline;
+            DotOven.Fill = DeviceComm.Oven.Connected ? BrushOnline : BrushOffline;
         }
 
         /// <summary>根据是否有设备连接，更新顶栏“通讯状态”指示灯。</summary>
@@ -75,6 +76,7 @@ namespace AgingTest.Views
                 "大电流程控电源" => new UC_N36100Power(),
                 "高精度程控电源" => new UC_N36600Power(),
                 "CAN-800H 调试" => new UC_CanDebug(),
+                "烘箱控制器" => new UC_OvenControl(),
                 _ => null
             };
             if (page == null) return null;

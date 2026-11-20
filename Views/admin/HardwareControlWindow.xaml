@@ -82,6 +82,12 @@
                 </Button>
                 <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
                     <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="烘箱控制器" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="DotOven" Width="8" Height="8" Fill="#BBB" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button HorizontalContentAlignment="Left" Padding="16,6" Background="Transparent" BorderThickness="0" Click="MenuItem_Click">
+                    <StackPanel Orientation="Horizontal">
                         <TextBlock Text="扫码枪" VerticalAlignment="Center"/>
                         <Ellipse x:Name="DotScanner" Width="8" Height="8" Fill="#DDD" Margin="10,0,0,0" VerticalAlignment="Center"/>
                     </StackPanel>

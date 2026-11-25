@@ -8,7 +8,7 @@ using System.Threading;
 namespace AgingTest.Models
 {
     /// <summary>
-    /// 【CAN 通讯管理】共享已打开的 CANFDNET-800U 设备/通道句柄（最多 6 台 × 8 通道），
+    /// 【CAN 通讯管理】共享已打开的 CANFDNET-800U 设备/通道句柄（6 台 × 8 通道），
     /// 提供发送(CAN/CANFD)、清空缓冲、复位通道、读接收数、在线状态，并广播接收帧与连接状态。
     ///
     /// 连接模型（依据《800H常用说明》3.3.7 以太网系列 2 与 ZCANPRO「设备管理/启动」界面）：

@@ -60,7 +60,7 @@ namespace AgingTest.Views
                     CanIndex = canIndex,
                     DeviceType = "CANFDNET-800U-TCP",
                     DeviceIndex = i,
-                    IpAddress = $"192.168.0.{9 + canIndex}",   // 默认 192.168.0.10 ~ .15
+                    IpAddress = $"192.168.0.{9 + canIndex}",   // 默认 192.168.0.10 ~ .15（6 台）
                     BasePort = 4001
                 };
                 card.EnsureChannels();

@@ -36,6 +36,116 @@ namespace AgingTest.Models
 
         /// <summary>烘箱控制器（Modbus TCP Server，网口）。</summary>
         public OvenSetting Oven { get; set; } = new OvenSetting();
+
+        /// <summary>BMS 诊断（UDS over CANFD，默认 0x775/0x77D）。</summary>
+        public UdsSetting Uds { get; set; } = new UdsSetting();
+
+        /// <summary>充电测试（以一层 8 工位为单位）工艺参数与工位映射。</summary>
+        public ChargeTestSetting ChargeTest { get; set; } = new ChargeTestSetting();
+    }
+
+    /// <summary>
+    /// 充电测试工艺参数。设备/工位默认映射：
+    ///   层 1~6 = 485 列 1~6；每层 4 块继电器板（地址 17~20）+ 4 块电阻卡（地址 1~4），每块板 2 个工位；
+    ///   层内列 1~8 对应继电器地址 17/17/18/18/19/19/20/20，电阻地址 1/1/2/2/3/3/4/4；
+    ///   奇数列为单工位（CTL18 唤醒、CTL2/4/9/11 上电、电阻 CH1~3），偶数列为双工位（CTL20、CTL6/8/13/15、CH5~7）；
+    ///   电子负载 1 负责层 1~3、负载 2 负责层 4~6，每层用本负载 CH1~8；
+    ///   大电源 N36100、小电源 N36600 均按层 1~6 对应 1~6 号机；CAN 按 UDS 工位映射（8 工位/盒）。
+    /// 以上为默认映射，现场如不同请修改本配置或界面上的工位“单/双”勾选。
+    /// </summary>
+    public class ChargeTestSetting
+    {
+        // 电子负载前提
+        public double LoadVonVolt { get; set; } = 2.0;
+        public double LoadCurrentA { get; set; } = 5.0;
+
+        // 小电源 N36620（现 N36600）
+        public double SmallSupplyVolt { get; set; } = 12.8;
+        public double SmallSupplyCurrentLimitA { get; set; } = 5.0;
+
+        // 大电源 N36190（现 N36100）
+        public double BigSupplyVolt { get; set; } = 14.4;
+        public double BigSupplyCurrentLimitA { get; set; } = 50.0;
+        /// <summary>单工位目标电流（A），整层目标 = 本值 × 选中工位数。</summary>
+        public double PerStationCurrentA { get; set; } = 5.0;
+        /// <summary>大电源总电流允许偏差（A）。</summary>
+        public double BigCurrentToleranceA { get; set; } = 2.0;
+        /// <summary>小电源电流上限（A），要求近似为 0。</summary>
+        public double SmallCurrentMaxA { get; set; } = 0.5;
+
+        // 上电稳定与采样
+        public int CurrentCheckDelayMs { get; set; } = 3000;
+        public int CurrentCheckSamples { get; set; } = 5;
+        public int CurrentCheckIntervalMs { get; set; } = 200;
+
+        // 唤醒
+        public int WakeTimeoutMs { get; set; } = 3000;
+        public int WakeIntervalMs { get; set; } = 500;
+
+        // 电阻模拟电芯温度
+        /// <summary>模拟电芯温度电阻（kΩ），写入 10000Ω。</summary>
+        public double CellTempResistanceKOhm { get; set; } = 10.0;
+
+        // 烘箱
+        public bool OvenEnabled { get; set; } = true;
+        public double OvenTemperature { get; set; } = 25.0;
+        public double OvenHumidity { get; set; } = 50.0;
+        /// <summary>停止充电测试时是否同时停止烘箱（关闭顺序未要求，默认保持）。</summary>
+        public bool StopOvenOnFinish { get; set; }
+
+        // 指示灯（接在继电器板上，CTL=0 表示不控制）
+        public int IndicatorCtl { get; set; }
+        public int IndicatorRelayAddr { get; set; } = 17;
+
+        /// <summary>偶数列工位号（默认 2/4/6/8…48）按双工位通道组控制。</summary>
+        public List<int> DualStationNos { get; set; } = DefaultDualStations();
+
+        private static List<int> DefaultDualStations()
+        {
+            var list = new List<int>();
+            for (int layer = 1; layer <= 6; layer++)
+                for (int col = 2; col <= 8; col += 2)
+                    list.Add((layer - 1) * 8 + col);
+            return list;
+        }
+
+        public bool IsDualStation(int stationNo)
+            => DualStationNos != null && DualStationNos.Contains(stationNo);
+    }
+
+    /// <summary>
+    /// BMS UDS 诊断参数（附录1：CANFD 请求 0x775、响应 0x77D，S3=5000ms）。
+    /// 安全访问的种子→密钥算法不在文档内，运行时由厂商算法库以委托形式注入。
+    /// </summary>
+    public class UdsSetting
+    {
+        public bool Enabled { get; set; } = true;
+        /// <summary>诊断走哪张 CAN 卡（1 起）。</summary>
+        public int CanIndex { get; set; } = 1;
+        /// <summary>诊断走该卡的哪个通道（0 起）。</summary>
+        public int Channel { get; set; }
+        public uint RequestId { get; set; } = 0x775;
+        public uint ResponseId { get; set; } = 0x77D;
+        public bool IsFd { get; set; } = true;
+        public bool IsExt { get; set; }
+        public int TimeoutMs { get; set; } = 1000;
+        /// <summary>安全访问等级（27 01 / 27 02）。</summary>
+        public byte SecurityLevel { get; set; } = 0x01;
+
+        /// <summary>安全访问算法库路径；留空则用输出目录 SecurityAlgorithm\QR_C1068\B2510_EHV_27_ZCANPRO.dll。</summary>
+        public string SecurityAlgorithmPath { get; set; } = "";
+
+        /// <summary>老化工位数（6 层 × 8 列 = 48）。</summary>
+        public int StationCount { get; set; } = 48;
+
+        /// <summary>每个 CAN 盒按顺序占用的工位数。默认 8（CAN1 ch0~ch7 对应 1~8，CAN2 对应 9~16，依此类推）。</summary>
+        public int StationsPerBox { get; set; } = 8;
+
+        /// <summary>第一个工位对应的 CAN 序号。</summary>
+        public int FirstCanIndex { get; set; } = 1;
+
+        /// <summary>每个 CAN 盒第一个工位对应的通道号。</summary>
+        public int FirstChannel { get; set; }
     }
 
     /// <summary>

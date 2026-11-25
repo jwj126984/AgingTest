@@ -71,6 +71,9 @@ namespace AgingTest.Models
         /// <summary>工位编号，如 "1-1"</summary>
         public string Code => $"{Layer}-{Column}";
 
+        /// <summary>工位序号 1~48（对应 UdsStation.StationNo / UdsStationManager 索引）</summary>
+        public int StationNo => (Layer - 1) * 8 + Column;
+
         /// <summary>工位条码（默认规则：POS + 编号，如 POS1-1），规则待客户确认</summary>
         public string Barcode => $"POS{Layer}-{Column}";
 

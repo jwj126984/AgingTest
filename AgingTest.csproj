@@ -13,4 +13,12 @@
     <PackageReference Include="System.IO.Ports" Version="10.0.12" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 安全访问算法库（32 位，随输出目录一起部署） -->
+    <Content Include="SecurityAlgorithm\**\*.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+
 </Project>

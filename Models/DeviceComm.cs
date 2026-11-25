@@ -194,6 +194,21 @@ namespace AgingTest.Models
             // 烘箱控制器（Modbus TCP，单台）
             Root.Comm.Oven ??= new OvenSetting();
             Oven.Cfg = Root.Comm.Oven;
+
+            // BMS 诊断（UDS over CANFD，默认 0x775/0x77D）
+            Root.Comm.Uds ??= new UdsSetting();
+        }
+
+        /// <summary>按当前通讯设置创建 UDS 客户端（调用方负责 Dispose）。</summary>
+        public static UdsClient CreateUds(Action<string>? log = null)
+        {
+            var cfg = Root.Comm.Uds;
+            var uds = new UdsClient(cfg.CanIndex, cfg.Channel, cfg.RequestId, cfg.ResponseId, cfg.IsFd, cfg.IsExt)
+            {
+                TimeoutMs = cfg.TimeoutMs
+            };
+            if (log != null) uds.Log += log;
+            return uds;
         }
 
         /// <summary>确保至少 2 台电子负载配置记录存在。</summary>

@@ -77,7 +77,6 @@ namespace AgingTest.Views
                 "高精度程控电源" => new UC_N36600Power(),
                 "CAN-800H 调试" => new UC_CanDebug(),
                 "烘箱控制器" => new UC_OvenControl(),
-                "充电测试" => new UC_ChargeTest(),
                 _ => null
             };
             if (page == null) return null;

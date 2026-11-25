@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -35,6 +36,11 @@ namespace AgingTest
         private readonly Random _rnd = new();
         private WorkStation? _pendingStation;   // 已扫描工位码、等待产品码的工位
         private readonly UserInfo _currentUser;
+
+        /// <summary>按层运行的充电/老化服务；点击“老化测试”后按已绑定工位启动。</summary>
+        private readonly Dictionary<int, ChargeTestService> _agingServices = new();
+        private bool _agingBusy;
+        private bool _agingStopPending;
 
         private static string HexString(byte[] data) => string.Join(" ", data.Select(b => b.ToString("X2")));
 
@@ -65,9 +71,22 @@ namespace AgingTest
             Closed += (_, _) =>
             {
                 DeviceComm.StateChanged -= DeviceComm_StateChanged;
+                // 退出程序前尽量按逆序关闭仍在老化的硬件，避免大/小电源保持输出。
+                var svcs = _agingServices.Values.ToList();
+                if (svcs.Count > 0)
+                {
+                    Task.Run(() =>
+                    {
+                        foreach (var svc in svcs)
+                        {
+                            try { svc.StopAsync(_ => { }).Wait(3000); } catch { }
+                        }
+                    }).Wait(8000);
+                }
                 CanComm.Clear();
             };
             ReadFullConfig();
+            UpdateTestButtons();
         }
 
         /// <summary>设备通讯状态变化时刷新顶栏指示灯。</summary>
@@ -213,12 +232,13 @@ namespace AgingTest
         {
             // 作业员不可修改测试/机种参数，技术员及以上可修改
             bool canEditParams = role != UserRole.Operator;
-            foreach (var tb in new[] { TxtAgingTemp, TxtAgingMinutes, TxtPollingMs, TxtRTSeconds })
+            foreach (var tb in new[] { TxtAgingTemp, TxtAgingHumidity, TxtAgingMinutes, TxtPollingMs, TxtRTSeconds })
             {
                 tb.IsReadOnly = !canEditParams;
                 tb.Background = canEditParams ? Brushes.White : new SolidColorBrush(Color.FromRgb(0xF0, 0xF2, 0xF5));
                 tb.ToolTip = canEditParams ? "可修改" : "仅技术员及以上可修改";
             }
+            ChkAgingOven.IsEnabled = canEditParams;
 
             // 用户管理入口：仅工程师可见
             BtnUserManage.Visibility = role == UserRole.Engineer ? Visibility.Visible : Visibility.Collapsed;
@@ -379,8 +399,10 @@ namespace AgingTest
             card.DataText.Text = ws.State switch
             {
                 WorkStationState.Aging =>
-                    $"V:{ws.CellVoltage:F2}V  T:{ws.CellTemp:F1}℃  I:{ws.Current:F1}A\n" +
-                    $"{ws.AgingStepText} {ws.AgingStepRemainSec}s  剩 {ws.RemainTime:hh\\:mm\\:ss}",
+                    (ws.CellVoltage > 0
+                        ? $"V:{ws.CellVoltage:F2}V  T:{ws.CellTemp:F1}℃  I:{ws.Current:F1}A\n"
+                        : "") +
+                    $"{(string.IsNullOrEmpty(ws.AgingPhaseText) ? $"{ws.AgingStepText} {ws.AgingStepRemainSec}s" : ws.AgingPhaseText)}  剩 {ws.RemainTime:hh\\:mm\\:ss}",
                 WorkStationState.RTAging =>
                     $"V:{ws.CellVoltage:F2}V  T:{ws.CellTemp:F1}℃  I:{ws.Current:F1}A\n" +
                     $"内:{ws.InnerVoltage:F2}V 外:{ws.OuterVoltage:F2}V  剩 {ws.RemainTime:hh\\:mm\\:ss}",
@@ -522,8 +544,14 @@ namespace AgingTest
             ScanInput.Focus();
         }
 
-        private void BtnAging_Click(object sender, RoutedEventArgs e)
+        private async void BtnAging_Click(object sender, RoutedEventArgs e)
         {
+            if (_agingBusy || _agingStopPending || _agingServices.Count > 0)
+            {
+                Hint("老化测试正在启动/运行，请先停止当前老化");
+                return;
+            }
+
             var targets = _stations.Where(s => s.State == WorkStationState.Bound).ToList();
             if (targets.Count == 0)
             {
@@ -532,33 +560,102 @@ namespace AgingTest
             }
             if (!double.TryParse(TxtAgingTemp.Text, out var temp) || temp < 0)
                 temp = 80;
+            if (!double.TryParse(TxtAgingHumidity.Text, out var humidity) || humidity is < 0 or > 100)
+                humidity = 50;
             if (!int.TryParse(TxtAgingMinutes.Text, out var minutes) || minutes < 1)
                 minutes = 120;
 
+            // 主界面输入的温度/湿度/时长直接写入老化工艺参数，充电流程服务按层读取。
+            var cfg = DeviceComm.Root.Comm.ChargeTest ??= new ChargeTestSetting();
+            cfg.OvenTemperature = temp;
+            cfg.OvenHumidity = humidity;
+            cfg.OvenEnabled = ChkAgingOven.IsChecked == true;
+            DeviceComm.SaveCommSettings();
+
+            var duration = TimeSpan.FromMinutes(minutes);
             foreach (var ws in targets)
             {
                 ws.State = WorkStationState.Aging;
                 ws.TestType = "老化测试";
                 ws.TestStartTime = DateTime.Now;
-                ws.TestDuration = TimeSpan.FromMinutes(minutes);
-                ws.RemainTime = ws.TestDuration;
+                ws.TestDuration = duration;
+                ws.RemainTime = duration;
                 ws.FaultInfo = "";
                 ws.DtcInfo = "无";
-                ws.MosClosed = true;   // 带载条件：MOS 闭合
-                // 老化流程：从《BMS老化测试项》第1步 BMS上电 开始
+                ws.MosClosed = false;                 // 硬件启动成功后再置为闭合
                 ws.AgingStep = AgingStep.PowerOn;
-                ws.AgingStepRemainSec = 10;
+                ws.AgingStepRemainSec = (int)duration.TotalSeconds;
+                ws.AgingPhaseText = "启动中";
                 UpdateCard(ws);
             }
-            if (!_testTimer.IsEnabled) _testTimer.Start();
-            AddLog($"[测试] 老化测试启动：{targets.Count} 个工位，温度 {temp:F0}℃，时长 {minutes} 分钟（流程：上电→带载→休眠→静置→唤醒循环）");
-            SetStatus($"老化测试进行中：{targets.Count} 个工位，目标温度 {temp:F0}℃");
+
+            _agingBusy = true;
+            UpdateTestButtons();
+            SetStatus($"老化测试启动中：{targets.Count} 个工位，正在按层执行上电流程……");
+            AddLog($"[老化] 启动：{targets.Count} 个已绑定工位，温度 {temp:F1}℃ / 湿度 {humidity:F0}% / 时长 {minutes} 分钟");
             RefreshStats();
-            ScanInput.Focus();
+
+            try
+            {
+                // 按层分组，逐层执行：负载/电源/继电器/电阻/CAN唤醒/UDS/MOS/电流校验/烘箱
+                foreach (var group in targets.GroupBy(s => s.Layer).OrderBy(g => g.Key))
+                {
+                    int layer = group.Key;
+                    var maps = group.Select(ws => new ChargeStationMap(ws, cfg.IsDualStation(ws.StationNo))).ToList();
+                    var svc = new ChargeTestService(cfg);
+
+                    AddLog($"[老化] 第 {layer} 层开始上电：{maps.Count} 个工位");
+                    await Task.Run(() => svc.StartAsync(layer, maps, AddLog));
+
+                    _agingServices[layer] = svc;
+                    foreach (var ws in group)
+                    {
+                        ws.MosClosed = true;
+                        ws.AgingPhaseText = "充电老化中";
+                        UpdateCard(ws);
+                    }
+                }
+
+                _testTimer.Start();
+                SetStatus($"老化测试进行中：{targets.Count} 个工位，目标温度 {temp:F1}℃ / 湿度 {humidity:F0}%");
+                AddLog($"[老化] 全部层上电校验通过，进入老化计时：{minutes} 分钟");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[老化] 启动失败：{ex.Message}");
+                var errors = await StopAgingServicesAsync();
+                foreach (var ws in targets)
+                {
+                    ws.State = WorkStationState.Bound;
+                    ws.TestType = "";
+                    ws.TestStartTime = null;
+                    ws.TestDuration = null;
+                    ws.RemainTime = null;
+                    ws.MosClosed = false;
+                    ws.AgingPhaseText = "";
+                    ws.AgingStepRemainSec = 0;
+                    ws.FaultInfo = errors.Count > 0 ? "启动失败且回退异常" : "";
+                    UpdateCard(ws);
+                }
+                MessageBox.Show(ex.Message, "老化测试启动失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                _agingBusy = false;
+                UpdateTestButtons();
+                RefreshStats();
+                ScanInput.Focus();
+            }
         }
 
-        private void BtnStop_Click(object sender, RoutedEventArgs e)
+        private async void BtnStop_Click(object sender, RoutedEventArgs e)
         {
+            if (_agingBusy || _agingStopPending)
+            {
+                Hint("正在启动/停止硬件流程，请稍候……");
+                return;
+            }
+
             var running = _stations.Where(s => s.State is WorkStationState.RTAging or WorkStationState.Aging).ToList();
             if (running.Count == 0)
             {
@@ -566,29 +663,82 @@ namespace AgingTest
                 return;
             }
 
-            foreach (var ws in running)
+            _agingBusy = true;
+            UpdateTestButtons();
+            SetStatus($"正在停止 {running.Count} 个工位……");
+            List<string> errors = new();
+            try
             {
-                AddLog($"[停止] 工位 {ws.Code} {ws.TestType} 已手动停止（未完成）");
-                ws.State = WorkStationState.Bound;
-                ws.TestType = "";
-                ws.TestStartTime = null;
-                ws.TestDuration = null;
-                ws.RemainTime = null;
-                ws.MosClosed = false;
-                ws.AgingStepRemainSec = 0;
-                UpdateCard(ws);
+                errors = await StopAgingServicesAsync();
             }
-            if (!_stations.Any(s => s.State is WorkStationState.RTAging or WorkStationState.Aging))
-                _testTimer.Stop();
-            SetStatus($"已停止 {running.Count} 个工位的测试");
-            Hint($"已停止 {running.Count} 个工位的测试");
-            RefreshStats();
-            ScanInput.Focus();
+            finally
+            {
+                foreach (var ws in running)
+                {
+                    AddLog($"[停止] 工位 {ws.Code} {ws.TestType} 已手动停止");
+                    if (ws.State == WorkStationState.Aging && errors.Count > 0)
+                    {
+                        // 硬件停止流程异常：保持 NG，提示人工检查，不能当作正常完成
+                        ws.State = WorkStationState.Failed;
+                        ws.FaultInfo = "停止流程异常，请检查设备";
+                    }
+                    else
+                    {
+                        ws.State = WorkStationState.Bound;
+                        ws.TestType = "";
+                        ws.TestStartTime = null;
+                        ws.TestDuration = null;
+                        ws.RemainTime = null;
+                        ws.MosClosed = false;
+                    }
+                    ws.AgingPhaseText = "";
+                    ws.AgingStepRemainSec = 0;
+                    UpdateCard(ws);
+                }
+                if (!_stations.Any(s => s.State is WorkStationState.RTAging or WorkStationState.Aging))
+                    _testTimer.Stop();
+                _agingBusy = false;
+                UpdateTestButtons();
+                SetStatus($"已停止 {running.Count} 个工位的测试");
+                Hint($"已停止 {running.Count} 个工位的测试");
+                RefreshStats();
+                ScanInput.Focus();
+            }
+        }
+
+        private async Task<List<string>> StopAgingServicesAsync()
+        {
+            var errors = new List<string>();
+            foreach (var kv in _agingServices.OrderByDescending(k => k.Key).ToList())
+            {
+                try
+                {
+                    var svc = kv.Value;
+                    await Task.Run(() => svc.StopAsync(AddLog));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"第 {kv.Key} 层停止失败：{ex.Message}");
+                    AddLog($"[停止] 第 {kv.Key} 层停止失败：{ex.Message}");
+                }
+            }
+            _agingServices.Clear();
+            return errors;
+        }
+
+        private void UpdateTestButtons()
+        {
+            BtnAging.IsEnabled = !_agingBusy && _agingServices.Count == 0;
+            BtnStop.IsEnabled = !_agingBusy;
+            BtnRT.IsEnabled = !_agingBusy && _agingServices.Count == 0;
+            ScanInput.IsEnabled = !_agingBusy;
         }
 
         private void TestTimer_Tick(object? sender, EventArgs e)
         {
             bool anyRunning = false;
+            var completedAging = new List<WorkStation>();
+
             foreach (var ws in _stations)
             {
                 if (ws.State is not (WorkStationState.RTAging or WorkStationState.Aging))
@@ -596,29 +746,41 @@ namespace AgingTest
 
                 anyRunning = true;
 
-                // 老化测试按《BMS老化测试项》步骤循环驱动；常温测试走简单模拟
-                if (ws.State == WorkStationState.Aging)
-                    AgingTick(ws);
-                else
+                // 常温测试仍走模拟；老化测试由真实充电流程驱动，这里只做总时长倒计时。
+                if (ws.State == WorkStationState.RTAging)
                     RTAgingTick(ws);
 
-                ws.RemainTime = ws.RemainTime - TimeSpan.FromSeconds(1);
+                ws.RemainTime = (ws.RemainTime ?? TimeSpan.Zero) - TimeSpan.FromSeconds(1);
                 if (ws.RemainTime <= TimeSpan.Zero)
                 {
                     ws.RemainTime = TimeSpan.Zero;
-                    // ---- 完成判定（模拟：95% PASS，5% NG 演示报警）----
-                    bool pass = _rnd.NextDouble() < 0.95;
-                    ws.State = pass ? WorkStationState.Passed : WorkStationState.Failed;
-                    if (!pass)
+                    if (ws.State == WorkStationState.Aging)
                     {
-                        ws.FaultInfo = "模拟异常（电压超限）";
-                        ws.DtcInfo = "P0560";
+                        if (ws.AgingPhaseText != "停止中")
+                        {
+                            ws.AgingPhaseText = "停止中";
+                            completedAging.Add(ws);
+                        }
                     }
-                    AddLog($"[完成] 工位 {ws.Code} {ws.TestType} 结束：{(pass ? "PASS" : "NG")}");
-                    if (!pass) Hint($"工位 {ws.Code} 测试 NG，请检查！");
+                    else
+                    {
+                        // ---- 常温测试完成判定（模拟：95% PASS，5% NG 演示报警）----
+                        bool pass = _rnd.NextDouble() < 0.95;
+                        ws.State = pass ? WorkStationState.Passed : WorkStationState.Failed;
+                        if (!pass)
+                        {
+                            ws.FaultInfo = "模拟异常（电压超限）";
+                            ws.DtcInfo = "P0560";
+                        }
+                        AddLog($"[完成] 工位 {ws.Code} {ws.TestType} 结束：{(pass ? "PASS" : "NG")}");
+                        if (!pass) Hint($"工位 {ws.Code} 测试 NG，请检查！");
+                    }
                 }
                 UpdateCard(ws);
             }
+
+            if (completedAging.Count > 0 && !_agingStopPending)
+                _ = CompleteAgingAsync(completedAging);
 
             if (!anyRunning)
             {
@@ -628,96 +790,53 @@ namespace AgingTest
             RefreshStats();
         }
 
-        // ==================== 老化流程（按《BMS老化测试项》步骤循环） ====================
-
-        /// <summary>
-        /// 老化步骤时序（序号1~12 循环，13=重复1-12）：
-        /// 上电 → 带载20min → 一级休眠 → 静置1min → 唤醒 → 带载20min → 二级休眠 → 静置1min → 唤醒 → 带载20min → 下电 → 静置1min → 回上电
-        /// </summary>
-        private static (AgingStep step, int seconds) NextAgingStep(AgingStep s) => s switch
+        /// <summary>老化计时结束：先按“断MOS→关继电器→关大电源→关小电源”的顺序停机，再判定结果。</summary>
+        private async Task CompleteAgingAsync(List<WorkStation> completed)
         {
-            AgingStep.PowerOn => (AgingStep.Load1, 1200),    // 1→2 带载20min（20×60s）
-            AgingStep.Load1 => (AgingStep.Sleep1, 10),       // 2→3 一级休眠
-            AgingStep.Sleep1 => (AgingStep.Rest1, 60),       // 3→4 静置1min
-            AgingStep.Rest1 => (AgingStep.Wake1, 10),        // 4→5 唤醒（网络管理报文）
-            AgingStep.Wake1 => (AgingStep.Load2, 1200),      // 5→6 带载20min
-            AgingStep.Load2 => (AgingStep.Sleep2, 10),       // 6→7 二级休眠
-            AgingStep.Sleep2 => (AgingStep.Rest2, 60),       // 7→8 静置1min
-            AgingStep.Rest2 => (AgingStep.Wake2, 10),        // 8→9 唤醒（低电平唤醒线拉低）
-            AgingStep.Wake2 => (AgingStep.Load3, 1200),      // 9→10 带载20min
-            AgingStep.Load3 => (AgingStep.PowerOff, 10),     // 10→11 BMS下电
-            AgingStep.PowerOff => (AgingStep.Rest3, 60),     // 11→12 静置1min
-            AgingStep.Rest3 => (AgingStep.PowerOn, 10),      // 12→1 重复序号1-12
-            _ => (AgingStep.PowerOn, 10)
-        };
-
-        /// <summary>老化工位每秒推进：步骤计时 + 恒温恒载数据模拟</summary>
-        private void AgingTick(WorkStation ws)
-        {
-            // 1) 步骤计时推进
-            ws.AgingStepRemainSec--;
-            if (ws.AgingStepRemainSec <= 0)
+            _agingStopPending = true;
+            try
             {
-                var next = NextAgingStep(ws.AgingStep);
-                ws.AgingStep = next.step;
-                ws.AgingStepRemainSec = next.seconds;
-                AddLog($"[老化] 工位 {ws.Code} → {ws.AgingStepText}（{next.seconds}s）");
-            }
+                AddLog($"[老化] 计时结束，开始逆序停机：{completed.Count} 个工位");
+                SetStatus("老化计时结束，正在逆序停机……");
+                var errors = await StopAgingServicesAsync();
 
-            // 2) 按当前步骤驱动 MOS / 电流 / 休眠状态（恒载）
-            switch (ws.AgingStep)
+                foreach (var ws in completed)
+                {
+                    ws.RemainTime = TimeSpan.Zero;
+                    ws.AgingPhaseText = "";
+                    ws.MosClosed = false;
+                    if (errors.Count == 0)
+                    {
+                        ws.State = WorkStationState.Passed;
+                        ws.FaultInfo = "";
+                        AddLog($"[完成] 工位 {ws.Code} 老化结束：PASS");
+                    }
+                    else
+                    {
+                        ws.State = WorkStationState.Failed;
+                        ws.FaultInfo = "停机异常，请检查设备";
+                        AddLog($"[完成] 工位 {ws.Code} 老化结束：停机异常 NG");
+                    }
+                    UpdateCard(ws);
+                }
+
+                if (!_stations.Any(s => s.State is WorkStationState.RTAging or WorkStationState.Aging))
+                {
+                    _testTimer.Stop();
+                    SetStatus(errors.Count == 0 ? "老化测试完成，等待下一轮" : "老化测试结束，但停机存在异常");
+                }
+                RefreshStats();
+            }
+            finally
             {
-                case AgingStep.PowerOn:   // 上电：低电平唤醒线拉低、发网络管理报文 → 可读电池信息
-                    ws.Current = 0.02 + _rnd.NextDouble() * 0.03;
-                    ws.MosClosed = false;
-                    ws.SleepMode = 0;
-                    break;
-                case AgingStep.Load1 or AgingStep.Load2 or AgingStep.Load3:   // 带载：P2带载5A + OUT1-OUT4各1A ≈ 9A
-                    ws.Current = 8.5 + _rnd.NextDouble() * 1.0;
-                    ws.MosClosed = true;
-                    ws.SleepMode = 0;
-                    break;
-                case AgingStep.Sleep1:    // 一级休眠：停止电流、发休眠指令（MOS保持闭合，不强制断开）
-                    ws.Current = 0;
-                    ws.SleepMode = 1;
-                    break;
-                case AgingStep.Sleep2:    // 二级休眠：停止电流、强制断开MOS及HSD输出
-                    ws.Current = 0;
-                    ws.MosClosed = false;
-                    ws.SleepMode = 2;
-                    break;
-                case AgingStep.Rest1 or AgingStep.Rest2 or AgingStep.Rest3:   // 静置
-                    ws.Current = 0;
-                    ws.MosClosed = false;
-                    ws.SleepMode = 0;
-                    break;
-                case AgingStep.Wake1 or AgingStep.Wake2:   // 唤醒：可正确读取电池信息
-                    ws.Current = 0.02 + _rnd.NextDouble() * 0.03;
-                    ws.MosClosed = false;
-                    ws.SleepMode = 0;
-                    break;
-                case AgingStep.PowerOff:  // BMS下电：停止电流输出、给BMS下电
-                    ws.Current = 0;
-                    ws.MosClosed = false;
-                    ws.SleepMode = 0;
-                    break;
+                _agingStopPending = false;
+                UpdateTestButtons();
             }
-
-            // 3) 恒温恒载监控数据（单体电压/电池电流/MOS温度/内外总压/DTC/MOS状态/故障）
-            ws.CellVoltage = ws.Current > 1
-                ? 3.2 + _rnd.NextDouble() * 0.3                       // 带载：电压略降
-                : 3.2 + _rnd.NextDouble() * 0.8;                      // 空载/休眠：3.2~4.0V
-            ws.CellTemp = 80 + (_rnd.NextDouble() - 0.5);             // 老化恒温 80±0.5℃
-            ws.MosTemp = ws.MosClosed
-                ? ws.CellTemp + 6 + _rnd.NextDouble() * 4             // MOS闭合带载温升
-                : ws.CellTemp;
-            ws.InnerVoltage = 12.0 + (_rnd.NextDouble() - 0.5) * 0.5; // 内总压 ≈12V
-            ws.OuterVoltage = ws.MosClosed
-                ? ws.InnerVoltage + (_rnd.NextDouble() - 0.5) * 0.1   // MOS闭合：内外导通
-                : 0;                                                  // MOS断开：内外隔离，外压≈0
-            ws.DtcInfo = "无";
-            ws.FaultInfo = "";
         }
+
+        // ==================== 老化流程 ====================
+        // 老化已改为真实设备流程：由 ChargeTestService 按层执行上电/唤醒/MOS/电流校验/烘箱，
+        // 主界面只负责总时长倒计时和到点逆序停机；不再使用原先的 12 步模拟循环。
 
         /// <summary>常温测试每秒模拟（简单恒温25℃带载）</summary>
         private void RTAgingTick(WorkStation ws)

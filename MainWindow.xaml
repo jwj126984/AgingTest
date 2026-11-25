@@ -193,16 +193,23 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Margin="0,0,6,0">
                                 <TextBlock Text="老化温度(℃)" FontSize="12" Foreground="#666"/>
                                 <TextBox x:Name="TxtAgingTemp" Text="80" Height="30" FontSize="14" VerticalContentAlignment="Center" Margin="0,2,0,8"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                            <StackPanel Grid.Column="1" Margin="6,0,6,0">
+                                <TextBlock Text="老化湿度(%)" FontSize="12" Foreground="#666"/>
+                                <TextBox x:Name="TxtAgingHumidity" Text="50" Height="30" FontSize="14" VerticalContentAlignment="Center" Margin="0,2,0,8"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Margin="6,0,0,0">
                                 <TextBlock Text="老化时间(分钟)" FontSize="12" Foreground="#666"/>
                                 <TextBox x:Name="TxtAgingMinutes" Text="120" Height="30" FontSize="14" VerticalContentAlignment="Center" Margin="0,2,0,8"/>
                             </StackPanel>
                         </Grid>
+                        <CheckBox x:Name="ChkAgingOven" Content="老化时控制烘箱温湿度" IsChecked="True"
+                                  FontSize="12" Foreground="#666" Margin="0,0,0,8"/>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>

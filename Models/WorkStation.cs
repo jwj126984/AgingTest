@@ -165,6 +165,9 @@ namespace AgingTest.Models
         /// <summary>当前老化步骤</summary>
         public AgingStep AgingStep { get; set; }
 
+        /// <summary>真实充电/老化阶段文本（如“启动中”“充电老化中”“停止中”）；为空时回退到模拟步骤文本。</summary>
+        public string AgingPhaseText { get; set; } = "";
+
         /// <summary>当前老化步骤剩余秒数</summary>
         public int AgingStepRemainSec { get; set; }
 

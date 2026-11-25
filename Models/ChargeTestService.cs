@@ -17,7 +17,7 @@ namespace AgingTest.Models
     }
 
     /// <summary>
-    /// 充电测试流程（以一层 8 工位为单位），严格按现场工艺顺序：
+    /// 老化测试充电流程（以一层 8 工位为单位），严格按现场工艺顺序：
     ///   负载 VON=2V/5A → 小电源 12.8V → 继电器唤醒 + CAN 网络管理唤醒 → 电阻 10kΩ →
     ///   大电源 14.4V（先不输出）→ 继电器上电通道 → UDS 强控 MOS 闭合 → 大电源输出 →
     ///   校验大电源总电流（5A/工位）且小电源电流≈0 → 烘箱设定并启动 → 指示灯。
@@ -52,7 +52,7 @@ namespace AgingTest.Models
             try
             {
                 if (State == ChargeTestState.Aging)
-                    throw new InvalidOperationException("当前已有充电测试在运行，请先执行停止流程");
+                    throw new InvalidOperationException("当前已有老化流程在运行，请先执行停止流程");
                 if (stations.Count == 0)
                     throw new InvalidOperationException("未选择任何工位");
 
@@ -61,13 +61,13 @@ namespace AgingTest.Models
                 _activeStations.Clear();
                 _activeStations.AddRange(stations);
                 State = ChargeTestState.Starting;
-                log($"===== 充电测试开始：第 {layer} 层，{stations.Count} 个工位 =====");
+                log($"===== 老化测试充电流程开始：第 {layer} 层，{stations.Count} 个工位 =====");
 
                 try
                 {
                     await RunStartSequenceAsync(stations, log);
                     State = ChargeTestState.Aging;
-                    log("===== 上电校验通过，已进入老化；点击“停止充电测试”按逆序关闭 =====");
+                    log("===== 上电校验通过，进入老化计时；计时结束后由主界面按逆序关闭 =====");
                 }
                 catch
                 {
@@ -95,12 +95,12 @@ namespace AgingTest.Models
                 if (_activeStations.Count == 0)
                 {
                     State = ChargeTestState.Idle;
-                    log("当前没有正在运行的充电测试");
+                    log("当前没有正在运行的老化测试");
                     return;
                 }
 
                 State = ChargeTestState.Stopping;
-                log($"===== 停止充电测试：第 {_activeLayer} 层，按逆序关闭 =====");
+                log($"===== 停止老化测试：第 {_activeLayer} 层，按逆序关闭 =====");
 
                 bool mosOpen = await OpenMosAndVerifyAsync(_activeStations, log);
                 if (!mosOpen)
@@ -138,7 +138,7 @@ namespace AgingTest.Models
                     catch (Exception ex) { log("烘箱停止失败：" + ex.Message); }
                 }
 
-                log("===== 充电测试停止完成 =====");
+                log("===== 老化测试停止完成 =====");
             }
             catch
             {

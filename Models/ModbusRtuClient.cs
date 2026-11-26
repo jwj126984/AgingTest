@@ -59,6 +59,7 @@ namespace AgingTest.Models
         /// <summary>FC05 写单个线圈（relayOn=开）。</summary>
         public void WriteSingleCoil(ushort coil, bool on)
         {
+            Thread.Sleep(10);
             byte v = on ? (byte)0xFF : (byte)0x00;
             var req = BuildFrame(0x05, new[] { (byte)(coil >> 8), (byte)coil, v, (byte)0x00 });
             Transact(req, expectedLen: 8);

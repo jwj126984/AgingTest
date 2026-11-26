@@ -11,7 +11,7 @@ namespace AgingTest.Views
     /// <summary>
     /// 烘箱控制器控制页（X4MCGSLDETYA120MV104.05WA，Modbus TCP Server 网口）。
     /// 状态：7990 运行状态 / 7991 当前温度 / 7992 湿度 / 8024 设定温度 / 8042~8043 累计运行时间 / 8034 段次 / 8012~8016 预计完成。
-    /// 控制：8100 定值温度、8101 定值湿度（×10，负温补码）；线圈 8000 启动、8001 停止、8029 暂停、8103 继续、8002 故障复位、8010 照明。
+    /// 控制：保持寄存器 8010=1 启动 / 8010=2 停止，8100 定值温度、8101 定值湿度（×10，负温补码）；线圈 8000 启动、8001 停止、8029 暂停、8103 继续、8002 故障复位、8010 照明。
     /// </summary>
     public partial class UC_OvenControl : UserControl
     {
@@ -142,8 +142,28 @@ namespace AgingTest.Views
         private void BtnStart_Click(object sender, RoutedEventArgs e)
             => Run("启动运行", () => { DeviceComm.Oven.Client.Start(); Log("下发启动（线圈 8000）"); });
 
-        private void BtnStop_Click(object sender, RoutedEventArgs e)
-            => Run("停止运行", () => { DeviceComm.Oven.Client.Stop(); Log("下发停止（线圈 8001）"); });
+        private async void BtnStop_Click(object sender, RoutedEventArgs e)
+        {
+            if (!DeviceComm.Oven.Connected)
+            {
+                MessageBox.Show("烘箱控制器未连接，请先在“通讯设置”中连接。", "停止运行", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                var result = await Task.Run(() => DeviceComm.Oven.Client.StopAndVerify());
+                Log("停止结果：" + result.message);
+                if (!result.ok)
+                    throw new InvalidOperationException(result.message);
+            }
+            catch (Exception ex)
+            {
+                Log("停止运行失败：" + ex.Message);
+                MessageBox.Show("停止运行失败：" + ex.Message, "通讯错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            RefreshStatus();
+        }
 
         private void BtnPause_Click(object sender, RoutedEventArgs e)
             => Run("暂停", () => { DeviceComm.Oven.Client.Pause(); Log("下发暂停（线圈 8029）"); });

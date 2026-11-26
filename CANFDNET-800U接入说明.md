@@ -50,12 +50,12 @@ ZCAN_CloseDevice
 1. **协议**（页面顶部，全局共用）：CAN / CANFD，CANFD 加速（是/否）。必须与设备端「控制器类型」一致。
 2. **每台 CAN 盒一行**：填 IP 地址、端口号，点「连接」；程序内部依次完成 打开设备（类型 57，索引 = 设备号-1）→ 8 个通道下发 `work_mode=客户端`、`ip`、`work_port` → `ZCAN_InitCAN` → `ZCAN_StartCAN`，状态显示「已连接 x/8 通道」（满 8 绿、不满 8 红）。
 3. 点「断开」调用 `ZCAN_CloseDevice`，8 个通道一并释放。
-4. 连接成功后 IP / 端口 / 协议自动写回 `Config.json`（保留 `GjdaDevices`、`Comm` 分区），下次启动由 `ReadFullConfig` 自动连接。
+4. 连接成功后 IP / 端口 / 协议自动写回 `Config.json`（保留 `GjdaDevices`、`Comm` 分区）；程序启动**不再自动连接**，需在主界面点击「连接设备」或在本页逐台点「连接」。
 
 ## 5. 收发监视（硬件控制 → CAN-800H 调试）
 
 - 取帧线程归 `CanComm` 所有：任一通道 `ZCAN_StartCAN` 成功后自动启动（`EnsureReceiveLoop`），
-  因此从「通讯设置」连接或主界面批量连接，监视界面都能收到帧；不再依赖 `ReadFullConfig` 的启动时机。
+  因此从「通讯设置」逐台连接或主界面「连接设备」批量连接，监视界面都能收到帧；程序启动时不连 CAN。
 - 轮询逻辑：每通道先 `ZCAN_GetReceiveNum(h,0/1)`，再 `ZCAN_Receive / ZCAN_ReceiveFD`（每次最多 256 帧，每轮最多 8 批），
   通道间 `Sleep 5ms`，无通道时 `50ms`。
 - **发送回显**：`CanComm.Send` 成功后调用 `RaiseFrameSent`，同一帧带 `IsTx=true` 广播，
@@ -83,4 +83,4 @@ ZCAN_CloseDevice
 | `Views/UC_CanDebug.xaml(.cs)` | 调试页：收发帧列表（方向/卡/通道/ID/类型/长度/数据）、接收与发送计数、按卡+通道过滤 |
 | `Models/Config.cs` | `CanChannelItem`（每通道 IP/端口/协议/模式）、`CanCardItem.BasePort`（起始端口）、旧配置兼容补齐 |
 | `Views/admin/UC_CanZlg800H.xaml(.cs)` | 连接页：每盒只填 IP + 端口号，连接/断开 + 状态；协议全局选择（已移除设备搜索、设备管理、逐通道启动） |
-| `MainWindow.xaml.cs` | `ReadFullConfig` 按通道批量启动，全部失败时释放句柄 |
+| `MainWindow.xaml.cs` | `ConnectCanCardsFromConfig` 仅在点击「连接设备」时按 `Config.json` 批量连接；启动不连 CAN，断开按钮同时释放 CAN |

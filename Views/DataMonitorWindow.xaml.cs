@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -22,6 +23,10 @@ namespace AgingTest.Views
         private readonly WorkStation _ws;
         private readonly DispatcherTimer _timer;
         private readonly Random _rnd = new();
+        private readonly int _canIndex;
+        private readonly int _canChannel;
+        private readonly ObservableCollection<CanFrameRow> _frames = new();
+        private bool _closed;
 
         private readonly List<double> _voltSeries = new();
         private readonly List<double> _tempSeries = new();
@@ -33,10 +38,13 @@ namespace AgingTest.Views
         {
             InitializeComponent();
             _ws = ws;
+            (_canIndex, _canChannel) = ResolveCan(ws.StationNo);
+            GridCanFrames.ItemsSource = _frames;
 
             Title = $"数据监控详情 - 工位 {ws.Code}";
             TxtDetailStation.Text = ws.Code;
             TxtDetailProduct.Text = string.IsNullOrEmpty(ws.ProductCode) ? "未绑定" : ws.ProductCode;
+            TxtCanLink.Text = $"CAN{_canIndex} / CH{_canChannel}";
 
             if (ws.Soc < 1) ws.Soc = 85;
             if (ws.Soh < 1) ws.Soh = 95;
@@ -50,8 +58,18 @@ namespace AgingTest.Views
             _timer.Tick += (_, _) => Tick();
             _timer.Start();
 
-            Closed += (_, _) => _timer.Stop();
-            Loaded += (_, _) => Tick();
+            CanComm.FrameReceived += OnCanFrame;
+            Closed += (_, _) =>
+            {
+                _closed = true;
+                _timer.Stop();
+                CanComm.FrameReceived -= OnCanFrame;
+            };
+            Loaded += (_, _) =>
+            {
+                UpdateCanLinkState();
+                Tick();
+            };
         }
 
         // ==================== 周期刷新 ====================
@@ -88,7 +106,10 @@ namespace AgingTest.Views
             // 老化步骤显示（按《BMS老化测试项》流程）
             if (aging)
             {
-                TxtDetailAgingStep.Text = $"{_ws.AgingStepText} {_ws.AgingStepRemainSec}s";
+                string phase = string.IsNullOrWhiteSpace(_ws.AgingPhaseText)
+                    ? $"{_ws.AgingStepText} {_ws.AgingStepRemainSec}s"
+                    : _ws.AgingPhaseText;
+                TxtDetailAgingStep.Text = phase;
                 TxtDetailAgingStep.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0xD9, 0xA8));
             }
             else
@@ -182,6 +203,71 @@ namespace AgingTest.Views
             // 老化流程自动驱动 MOS/休眠状态时，同步刷新指示灯与状态文本
             UpdateMosState();
             UpdateSleepState();
+            UpdateCanLinkState();
+        }
+
+        // ==================== 本工位 CAN 报文监视 ====================
+
+        private static (int can, int ch) ResolveCan(int stationNo)
+        {
+            var uds = DeviceComm.Root.Comm.Uds;
+            int perBox = Math.Max(1, uds.StationsPerBox);
+            int offset = Math.Max(0, stationNo - 1);
+            int can = uds.FirstCanIndex + offset / perBox;
+            int ch = uds.FirstChannel + offset % perBox;
+
+            if (can < 1) can = 1;
+            if (can > CanComm.CardCount) can = CanComm.CardCount;
+            if (ch < 0) ch = 0;
+            if (ch >= CanComm.ChannelCount) ch = CanComm.ChannelCount - 1;
+            return (can, ch);
+        }
+
+        private void UpdateCanLinkState()
+        {
+            if (TxtCanLink == null || CanLinkDot == null || TxtCanLinkState == null) return;
+            TxtCanLink.Text = $"CAN{_canIndex} / CH{_canChannel}";
+            bool started = CanComm.IsChannelStarted(_canIndex, _canChannel);
+            CanLinkDot.Fill = new SolidColorBrush(started
+                ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xB0, 0xB6, 0xC0));
+            TxtCanLinkState.Text = started ? "通道已启动，实时收发" : "通道未启动";
+            TxtCanLinkState.Foreground = new SolidColorBrush(started
+                ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0x88, 0x88, 0x88));
+        }
+
+        /// <summary>CAN 接收/发送线程回调：只接收本工位对应 CAN 盒/通道的报文，切回 UI 线程显示。</summary>
+        private void OnCanFrame(CanComm.CanFrameInfo frame)
+        {
+            if (_closed || frame.CanIndex != _canIndex || frame.Channel != _canChannel) return;
+
+            if (Dispatcher.CheckAccess())
+            {
+                AddCanFrame(frame);
+            }
+            else
+            {
+                Dispatcher.BeginInvoke(new Action(() => AddCanFrame(frame)));
+            }
+        }
+
+        private void AddCanFrame(CanComm.CanFrameInfo frame)
+        {
+            if (_closed) return;
+
+            var row = new CanFrameRow
+            {
+                Time = frame.Time.ToString("HH:mm:ss.fff"),
+                Direction = frame.IsTx ? "TX 发送" : "RX 接收",
+                Id = $"0x{frame.Id:X}",
+                Kind = frame.Kind,
+                Length = frame.Len.ToString(),
+                Data = frame.DataText
+            };
+
+            _frames.Add(row);
+            while (_frames.Count > 200) _frames.RemoveAt(0);
+            TxtFrameCount.Text = $"报文 {_frames.Count}";
+            GridCanFrames.ScrollIntoView(row);
         }
 
         // ==================== 控制功能实现 ====================
@@ -311,5 +397,16 @@ namespace AgingTest.Views
         }
 
         private static double Clamp(double v, double min, double max) => v < min ? min : (v > max ? max : v);
+    }
+
+    /// <summary>DataMonitorWindow 报文列表的一行。</summary>
+    public sealed class CanFrameRow
+    {
+        public string Time { get; init; } = "";
+        public string Direction { get; init; } = "";
+        public string Id { get; init; } = "";
+        public string Kind { get; init; } = "";
+        public string Length { get; init; } = "";
+        public string Data { get; init; } = "";
     }
 }

@@ -30,6 +30,14 @@ namespace AgingTest.Models
 
         public event Action<string>? Log;
 
+        /// <summary>是否把每一帧收发写入日志；会话维持 3E 80 需要静默，避免刷屏。</summary>
+        public bool LogEnabled { get; set; } = true;
+
+        private void WriteLog(string text)
+        {
+            if (LogEnabled) Log?.Invoke(text);
+        }
+
         private readonly object _reqLock = new();
         private readonly AutoResetEvent _rxDone = new(false);
         private readonly AutoResetEvent _fcDone = new(false);
@@ -83,7 +91,7 @@ namespace AgingTest.Models
                     // 7F SID 78 = responsePending，继续等待最终响应
                     if (resp.Length >= 3 && resp[0] == 0x7F && resp[2] == 0x78)
                     {
-                        Log?.Invoke("ECU 返回 0x78（responsePending），继续等待最终响应");
+                        WriteLog("ECU 返回 0x78（responsePending），继续等待最终响应");
                         continue;
                     }
                     return resp;
@@ -209,7 +217,7 @@ namespace AgingTest.Models
             if (!CanComm.Send(CanIndex, Channel, RequestId, data, IsExt, false, IsFd))
                 throw new IOException($"CAN 发送失败（CAN{CanIndex} 通道{Channel} 未就绪）");
 
-            Log?.Invoke($"{tag} TX 0x{RequestId:X}: {Hex(data)}");
+            WriteLog($"{tag} TX 0x{RequestId:X}: {Hex(data)}");
         }
 
         private void SendFlowControl(byte flowStatus = 0x00, byte blockSize = 0x00, byte stMin = 0x00)
@@ -275,7 +283,7 @@ namespace AgingTest.Models
                         byte[] payload = new byte[len];
                         Array.Copy(d, off, payload, 0, len);
                         _rxAssembled = payload;
-                        Log?.Invoke($"SF RX 0x{ResponseId:X}: {Hex(payload)}");
+                        WriteLog($"SF RX 0x{ResponseId:X}: {Hex(payload)}");
                         _rxDone.Set();
                         break;
                     }
@@ -310,7 +318,7 @@ namespace AgingTest.Models
 
                         if (_rxReceived >= _rxExpected)
                         {
-                            Log?.Invoke($"MF RX 0x{ResponseId:X}: {Hex(_rxAssembled)}");
+                            WriteLog($"MF RX 0x{ResponseId:X}: {Hex(_rxAssembled)}");
                             _rxDone.Set();
                         }
                         break;
@@ -319,7 +327,7 @@ namespace AgingTest.Models
             }
             catch (Exception ex)
             {
-                Log?.Invoke("ISO-TP 接收异常：" + ex.Message);
+                WriteLog("ISO-TP 接收异常：" + ex.Message);
             }
         }
 

@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
 
 namespace AgingTest.Models
 {
@@ -43,6 +46,7 @@ namespace AgingTest.Models
         // 可写（06）
         public const int RegSetTempWrite = 8100;       // 定值设定温度（×10）
         public const int RegSetHumidityWrite = 8101;   // 定值设定湿度（×10）
+        public const int RegDeviceRunControl = 8010;   // 设备启停：1=运行，2=停止
         public const int RegControlType = 8107;        // 0 温湿度 / 1 温度
         public const int RegOperationMode = 8108;      // 0 定值控制 / 1 程式控制
         public const int RegTempLowLimit = 8112;
@@ -90,12 +94,22 @@ namespace AgingTest.Models
         /// 读取一次完整状态。分段批量读取，避免 48 个工位同时轮询时占用过多往返：
         ///   7990~7999（运行状态/温度/湿度）、8024~8025（设定值）、8042~8043（运行时间）、8012~8016（预计完成）、8034（段次）
         /// </summary>
+        /// <summary>7990 运行状态：优先 03，部分固件只接受 04 时自动回退。</summary>
+        private ushort[] ReadRunStatus()
+        {
+            try { return _mb.ReadHoldingRegisters(RegRunStatus, 1); }
+            catch { return _mb.ReadInputRegisters(RegRunStatus, 1); }
+        }
+
         public OvenStatus ReadStatus()
         {
             var st = new OvenStatus { Timestamp = DateTime.Now };
 
             // 运行状态 + 当前温度 + 当前湿度（首帧失败直接抛出，供界面提示通讯异常）
-            var head = _mb.ReadHoldingRegisters(RegRunStatus, 10);        // 7990~7999
+            // 协议表把 7990~7999 列在输入寄存器区，部分固件用 04；这里 03 失败时自动用 04 兜底。
+            ushort[] head;
+            try { head = _mb.ReadHoldingRegisters(RegRunStatus, 10); }
+            catch { head = _mb.ReadInputRegisters(RegRunStatus, 10); }
             st.Running = head[0] != 0;
             st.CurrentTemp = ToValue(head[1]);
             st.Humidity = ToValue(head[2]);
@@ -140,11 +154,66 @@ namespace AgingTest.Models
         // ================================================================
         // 控制操作
         // ================================================================
-        /// <summary>启动设备（线圈 8000，设备收到后自动复位）。</summary>
-        public void Start() => _mb.WriteSingleCoil(CoilRun, true);
+        /// <summary>
+        /// 启动设备：写保持寄存器 8010=1（设备启停），同时脉冲线圈 8000（运行按钮）。
+        /// 两个通道都下发，避免设备处于本地/远程模式时单一线圈不生效。
+        /// </summary>
+        public void Start()
+        {
+            var errors = new List<Exception>(2);
+            try { _mb.WriteSingleRegister(RegDeviceRunControl, 1); }
+            catch (Exception ex) { errors.Add(ex); }
+            try { _mb.WriteSingleCoil(CoilRun, true); }
+            catch (Exception ex) { errors.Add(ex); }
 
-        /// <summary>停止设备（线圈 8001）。</summary>
-        public void Stop() => _mb.WriteSingleCoil(CoilStop, true);
+            if (errors.Count == 2)
+                throw new IOException("烘箱启动失败：8010=1 与线圈 8000 均未成功。" + errors[0].Message);
+        }
+
+        /// <summary>
+        /// 停止设备：写保持寄存器 8010=2（设备启停），同时脉冲线圈 8001（停止按钮）。
+        /// 两个通道都下发，避免只写按钮线圈时设备未真正停止。
+        /// </summary>
+        public void Stop()
+        {
+            var errors = new List<Exception>(2);
+            try { _mb.WriteSingleRegister(RegDeviceRunControl, 2); }
+            catch (Exception ex) { errors.Add(ex); }
+            try { _mb.WriteSingleCoil(CoilStop, true); }
+            catch (Exception ex) { errors.Add(ex); }
+
+            if (errors.Count == 2)
+                throw new IOException("烘箱停止失败：8010=2 与线圈 8001 均未成功。" + errors[0].Message);
+        }
+
+        /// <summary>
+        /// 停止并回读 7990 运行状态，确认设备确实从“运行”变为“停止”。
+        /// 返回 false 时界面必须提示，不能只显示“已下发停止”就当作成功。
+        /// </summary>
+        public (bool ok, string message) StopAndVerify(int timeoutMs = 5000)
+        {
+            string stopError = "";
+            try { Stop(); }
+            catch (Exception ex) { stopError = ex.Message; }
+
+            var sw = Stopwatch.StartNew();
+            string lastError = "";
+            while (sw.ElapsedMilliseconds < Math.Max(500, timeoutMs))
+            {
+                try
+                {
+                    ushort[] status = ReadRunStatus();
+                    if (status.Length > 0 && status[0] == 0)
+                        return (true, $"烘箱已停止（7990=0，确认用时 {sw.ElapsedMilliseconds}ms）");
+                }
+                catch (Exception ex) { lastError = ex.Message; }
+                Thread.Sleep(200);
+            }
+
+            string detail = string.IsNullOrEmpty(lastError) ? "7990 仍为运行状态" : "7990 回读失败：" + lastError;
+            if (!string.IsNullOrEmpty(stopError)) detail = stopError + "；" + detail;
+            return (false, "烘箱停止未确认：" + detail);
+        }
 
         /// <summary>故障复位（线圈 8002）。</summary>
         public void FaultReset() => _mb.WriteSingleCoil(CoilFaultReset, true);

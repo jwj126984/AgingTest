@@ -2,8 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="数据监控详情"
-        Height="900" Width="1050"
-        MinHeight="780" MinWidth="920"
+        Height="960" Width="1050"
+        MinHeight="840" MinWidth="920"
         WindowStartupLocation="CenterOwner"
         Background="#EFF2F7" ResizeMode="CanResize">
     <Window.Resources>
@@ -50,6 +50,7 @@
             <RowDefinition Height="52"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="180"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="34"/>
         </Grid.RowDefinitions>
@@ -237,8 +238,44 @@
             </Grid>
         </Border>
 
+        <!-- ===== 本工位 CAN 报文监视（老化、唤醒、UDS 诊断实时收发） ===== -->
+        <Border Grid.Row="3" Background="White" BorderBrush="#D5DCE6" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,8,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="26"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="本工位 CAN 报文监视" FontSize="12" FontWeight="Bold" Foreground="#1F3864" VerticalAlignment="Center"/>
+                        <Ellipse x:Name="CanLinkDot" Width="9" Height="9" Fill="#B0B6C0" Margin="12,0,5,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtCanLink" Text="CAN1 / CH0" FontSize="12" FontWeight="Bold" Foreground="#2F6FED" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtCanLinkState" Text="未启动" FontSize="11" Foreground="#888" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <TextBlock x:Name="TxtFrameCount" Text="报文 0" FontSize="11" Foreground="#7A8699" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                </Grid>
+                <DataGrid x:Name="GridCanFrames" Grid.Row="1"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          CanUserReorderColumns="False" CanUserResizeRows="False"
+                          HeadersVisibility="Column" RowHeaderWidth="0"
+                          GridLinesVisibility="Horizontal" AlternatingRowBackground="#F7F9FC"
+                          Background="#FBFCFE" BorderThickness="0" FontSize="11"
+                          HorizontalGridLinesBrush="#E8EDF5" VerticalGridLinesBrush="#E8EDF5">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="时间" Binding="{Binding Time}" Width="86"/>
+                        <DataGridTextColumn Header="方向" Binding="{Binding Direction}" Width="70"/>
+                        <DataGridTextColumn Header="ID" Binding="{Binding Id}" Width="88"/>
+                        <DataGridTextColumn Header="类型" Binding="{Binding Kind}" Width="54"/>
+                        <DataGridTextColumn Header="长度" Binding="{Binding Length}" Width="46"/>
+                        <DataGridTextColumn Header="数据" Binding="{Binding Data}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Border>
+
         <!-- ===== 实时曲线 ===== -->
-        <Grid Grid.Row="3" Margin="0,8,0,0">
+        <Grid Grid.Row="4" Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -296,7 +333,7 @@
         </Grid>
 
         <!-- ===== 故障诊断栏 ===== -->
-        <Border Grid.Row="4" Background="#FFF4F4" BorderBrush="#E5C4C4" BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,8,0,0">
+        <Border Grid.Row="5" Background="#FFF4F4" BorderBrush="#E5C4C4" BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,8,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>

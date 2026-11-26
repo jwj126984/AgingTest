@@ -79,6 +79,7 @@ namespace AgingTest.Models
         private readonly UdsSetting _cfg;
         private Thread? _keepAliveThread;
         private volatile bool _keepAliveRunning;
+        private readonly ManualResetEventSlim _keepAliveStop = new(false);
 
         public List<UdsStation> Stations { get; } = new();
 
@@ -124,16 +125,17 @@ namespace AgingTest.Models
             station.Prepare(algorithmPath, level);
         }
 
-        /// <summary>单线程统一保活：每 intervalMs 对处于扩展会话的工位发 3E 80。</summary>
-        public void StartKeepAlive(int intervalMs = 2000)
+        /// <summary>单线程统一保活：每 intervalMs 对处于扩展会话的工位发 3E 80。日志只记录启停，不逐帧输出。</summary>
+        public void StartKeepAlive(int intervalMs = 2000, Action<string>? log = null)
         {
             if (_keepAliveRunning) return;
             _keepAliveRunning = true;
+            _keepAliveStop.Reset();
+            log?.Invoke($"UDS 会话维持已启动：每 {intervalMs}ms 发送 3E 80（不逐帧写日志）");
             _keepAliveThread = new Thread(() =>
             {
-                while (_keepAliveRunning)
+                while (!_keepAliveStop.Wait(intervalMs))
                 {
-                    Thread.Sleep(intervalMs);
                     if (!_keepAliveRunning) break;
 
                     foreach (var station in Stations)
@@ -148,9 +150,10 @@ namespace AgingTest.Models
             _keepAliveThread.Start();
         }
 
-        public void StopKeepAlive()
+        public void StopKeepAlive(Action<string>? log = null)
         {
             _keepAliveRunning = false;
+            _keepAliveStop.Set();
             _keepAliveThread?.Join(1000);
             _keepAliveThread = null;
         }

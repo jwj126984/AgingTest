@@ -67,10 +67,12 @@ namespace AgingTest
             AddLog($"系统就绪（当前用户：{user.RoleName}），请先扫描【工位码】绑定工位（先扫工位码，再扫产品码）");
             DeviceComm.LoadSettings();
             DeviceComm.StateChanged += DeviceComm_StateChanged;
+            CanComm.StateChanged += DeviceComm_StateChanged;
             UpdateCommIndicator();
             Closed += (_, _) =>
             {
                 DeviceComm.StateChanged -= DeviceComm_StateChanged;
+                CanComm.StateChanged -= DeviceComm_StateChanged;
                 // 退出程序前尽量按逆序关闭仍在老化的硬件，避免大/小电源保持输出。
                 var svcs = _agingServices.Values.ToList();
                 if (svcs.Count > 0)
@@ -85,7 +87,6 @@ namespace AgingTest
                 }
                 CanComm.Clear();
             };
-            ReadFullConfig();
             UpdateTestButtons();
         }
 
@@ -98,7 +99,7 @@ namespace AgingTest
         /// <summary>根据是否有设备连接，更新顶栏“通讯状态”指示灯。</summary>
         private void UpdateCommIndicator()
         {
-            bool any = DeviceComm.AnyConnected;
+            bool any = DeviceComm.AnyConnected || CanComm.Cards.Any(c => c.IsOnline);
             TxtComm.Text = any ? "设备已连接" : "通讯未连接";
             TxtComm.Foreground = any ? new SolidColorBrush(Color.FromRgb(0xD9, 0xF3, 0xE3)) : new SolidColorBrush(Color.FromRgb(0xFF, 0xD9, 0xA8));
             CommDot.Fill = any ? new SolidColorBrush(Color.FromRgb(0x2F, 0xA8, 0x4F)) : new SolidColorBrush(Color.FromRgb(0xF0, 0xA0, 0x20));
@@ -113,10 +114,11 @@ namespace AgingTest
             AddLog("[通讯设置] 通讯设置窗口已关闭");
         }
 
-        /// <summary>连接全部被控设备。</summary>
+        /// <summary>连接全部被控设备：CAN 卡同样在这里按 Config.json 手动连接，程序启动不自动连。</summary>
         private void BtnConnectDevice_Click(object sender, RoutedEventArgs e)
         {
             var errors = Models.DeviceComm.ConnectAll();
+            errors.AddRange(ConnectCanCardsFromConfig());
             UpdateCommIndicator();
             if (errors.Count == 0)
             {
@@ -137,87 +139,92 @@ namespace AgingTest
         private void BtnDisconnectDevice_Click(object sender, RoutedEventArgs e)
         {
             Models.DeviceComm.DisconnectAll();
+            CanComm.Clear();
             UpdateCommIndicator();
-            AddLog("[断开设备] 已断开全部设备");
+            AddLog("[断开设备] 已断开全部设备（含 CAN 卡）");
             SetStatus("已断开全部设备");
             Hint("已断开全部设备");
         }
 
 
-        public void ReadFullConfig()
+        /// <summary>
+        /// 按 Config.json 手动连接全部 CAN 卡；仅在主界面点击“连接设备”时调用，程序启动不再自动连接。
+        /// 单卡失败不影响其它卡，返回失败信息列表。
+        /// </summary>
+        private List<string> ConnectCanCardsFromConfig()
         {
-            ///can卡连接
+            var errors = new List<string>();
+            if (!File.Exists(ConfigFilePath))
             {
-                if (!File.Exists(ConfigFilePath))
-                {
-                    AddLog("Config.json配置文件不存在");
-                    return;
-                }
+                AddLog("Config.json配置文件不存在，CAN 卡未连接");
+                errors.Add("Config.json 不存在，CAN 卡未连接");
+                return errors;
+            }
 
-                List<CanCardItem>? canCardItemList = null;
+            List<CanCardItem>? canCardItemList = null;
+            try
+            {
+                string jsonText = File.ReadAllText(ConfigFilePath);
+                var cfg = JsonSerializer.Deserialize<Config>(jsonText, _jsonOpt);
+                canCardItemList = cfg?.CanCardList;
+            }
+            catch (Exception ex)
+            {
+                AddLog($"读取JSON配置异常：{ex.Message}");
+                errors.Add("读取 CAN 配置失败：" + ex.Message);
+                return errors;
+            }
+
+            if (canCardItemList == null || canCardItemList.Count == 0)
+            {
+                AddLog("JSON中没有CAN卡配置，CAN 卡未连接");
+                errors.Add("Config.json 中没有 CAN 卡配置");
+                return errors;
+            }
+
+            foreach (var card in canCardItemList)
+            {
                 try
                 {
-                    string jsonText = File.ReadAllText(ConfigFilePath);
-                    var cfg = JsonSerializer.Deserialize<Config>(jsonText, _jsonOpt);
-                    canCardItemList = cfg?.CanCardList;
-                }
-                catch (Exception ex)
-                {
-                    AddLog($"读取JSON配置异常：{ex.Message}");
-                    return;
-                }
-
-                if (canCardItemList == null || canCardItemList.Count == 0)
-                {
-                    AddLog("JSON中没有CAN卡配置");
-                    return;
-                }
-
-                try
-                {
-                    // 遍历每一张CAN设备配置（CanIndex 1~6），单卡失败不影响其它卡
-                    foreach (var card in canCardItemList)
+                    var channels = card.EnsureChannels();
+                    var enabled = channels.Where(c => c.Enabled).ToList();
+                    if (enabled.Count == 0)
                     {
-                        try
-                        {
-                            var channels = card.EnsureChannels();
-                            var enabled = channels.Where(c => c.Enabled).ToList();
-                            if (enabled.Count == 0)
-                            {
-                                AddLog($"【CAN{card.CanIndex}】没有任何启用通道，跳过该设备");
-                                continue;
-                            }
-                            if (enabled.All(c => string.IsNullOrWhiteSpace(c.IpAddress)) && card.WorkMode == 0)
-                            {
-                                AddLog($"【CAN{card.CanIndex}】通道 IP 配置为空，跳过该设备");
-                                continue;
-                            }
-                            var (ok, err) = CanComm.OpenCard(card.CanIndex, card, AddLog);
-                            AddLog($"【CAN{card.CanIndex}】{err}");
-                            if (!ok) AddLog($"【CAN{card.CanIndex}】连接失败，继续下一台设备");
-                            // 泵一次 UI 消息，保持窗口在批量连接期间可响应
-                            Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
-                        }
-                        catch (Exception cardEx)
-                        {
-                            AddLog($"【CAN{card.CanIndex}】连接异常：{cardEx.Message}，继续下一张卡");
-                        }
+                        string msg = $"【CAN{card.CanIndex}】没有任何启用通道，跳过该设备";
+                        AddLog(msg);
+                        errors.Add(msg);
+                        continue;
+                    }
+                    if (enabled.All(c => string.IsNullOrWhiteSpace(c.IpAddress)) && card.WorkMode == 0)
+                    {
+                        string msg = $"【CAN{card.CanIndex}】通道 IP 配置为空，跳过该设备";
+                        AddLog(msg);
+                        errors.Add(msg);
+                        continue;
                     }
 
-                    // 接收线程由 CanComm 在通道启动成功后自动拉起，这里只做一次兜底
-                    CanComm.EnsureReceiveLoop();
-                    AddLog("接收线程已启动");
-                    AddLog("====全部CAN卡批量打开流程执行完毕====");
+                    var (ok, err) = CanComm.OpenCard(card.CanIndex, card, AddLog);
+                    AddLog($"【CAN{card.CanIndex}】{err}");
+                    if (!ok)
+                    {
+                        errors.Add($"CAN{card.CanIndex} 连接失败：{err}");
+                        AddLog($"【CAN{card.CanIndex}】连接失败，继续下一台设备");
+                    }
+                    // 泵一次 UI 消息，保持窗口在批量连接期间可响应
+                    Dispatcher.CurrentDispatcher.Invoke(DispatcherPriority.Background, new Action(() => { }));
                 }
-                catch (Exception ex)
+                catch (Exception cardEx)
                 {
-                    AddLog($"批量打开CAN整体流程异常：{ex.Message}");
-                    return;
+                    AddLog($"【CAN{card.CanIndex}】连接异常：{cardEx.Message}，继续下一张卡");
+                    errors.Add($"CAN{card.CanIndex} 连接异常：{cardEx.Message}");
                 }
             }
-            //电子负载连接
-            { 
-            }
+
+            // 接收线程由 CanComm 在通道启动成功后自动拉起，这里只做一次兜底
+            CanComm.EnsureReceiveLoop();
+            AddLog("接收线程已启动");
+            AddLog("====全部CAN卡批量打开流程执行完毕====");
+            return errors;
         }
 
 

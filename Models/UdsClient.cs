@@ -264,15 +264,24 @@ namespace AgingTest.Models
         // ================================================================
         // 其它常用服务
         // ================================================================
-        /// <summary>3E 80：保持会话（S3=5000ms，附录1）。抑制正响应时只发不等回。</summary>
-        public byte[] TesterPresent(bool suppressPositiveResponse = true)
+        /// <summary>3E 80：保持会话（S3=5000ms，附录1）。抑制正响应时只发不等回；默认不逐帧写日志，避免界面刷屏。</summary>
+        public byte[] TesterPresent(bool suppressPositiveResponse = true, bool writeLog = false)
         {
-            if (suppressPositiveResponse)
+            bool oldLog = Transport.LogEnabled;
+            Transport.LogEnabled = writeLog;
+            try
             {
-                Transport.SendOnly(new byte[] { 0x3E, 0x80 });
-                return new byte[] { 0x7E, 0x00 };
+                if (suppressPositiveResponse)
+                {
+                    Transport.SendOnly(new byte[] { 0x3E, 0x80 });
+                    return new byte[] { 0x7E, 0x00 };
+                }
+                return Request(0x3E, 0x00);
             }
-            return Request(0x3E, 0x00);
+            finally
+            {
+                Transport.LogEnabled = oldLog;
+            }
         }
 
         /// <summary>11 01：硬复位；11 02：钥匙关 ON-OFF；11 03：软复位。</summary>

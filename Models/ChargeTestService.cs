@@ -122,7 +122,7 @@ namespace AgingTest.Models
                 // MOS 已确认断开，不再需要诊断会话，立即停止 3E 80 会话维持报文。
                 try
                 {
-                    _udsMgr?.StopKeepAlive();
+                    _udsMgr?.StopKeepAlive(log);
                     log("UDS 会话维持报文（3E 80）已停止");
                 }
                 catch (Exception ex) { log("UDS 会话维持停止失败：" + ex.Message); }
@@ -151,8 +151,18 @@ namespace AgingTest.Models
 
                 if (_cfg.OvenEnabled && _cfg.StopOvenOnFinish && DeviceComm.Oven.Connected)
                 {
-                    try { DeviceComm.Oven.Client.Stop(); log("烘箱已停止"); }
-                    catch (Exception ex) { log("烘箱停止失败：" + ex.Message); }
+                    try
+                    {
+                        var result = DeviceComm.Oven.Client.StopAndVerify();
+                        if (!result.ok)
+                            throw new InvalidOperationException(result.message);
+                        log("烘箱：" + result.message);
+                    }
+                    catch (Exception ex)
+                    {
+                        log("烘箱停止失败：" + ex.Message);
+                        throw;
+                    }
                 }
 
                 log("===== 老化测试停止完成 =====");
@@ -538,7 +548,7 @@ namespace AgingTest.Models
             }
 
             if (_udsMgr != null)
-                _udsMgr.StartKeepAlive(2000);
+                _udsMgr.StartKeepAlive(2000, log);
             return client;
         }
 

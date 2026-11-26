@@ -69,8 +69,7 @@ namespace AgingTest.Models
                 {
                     await RunStartSequenceAsync(stations, log);
                     State = ChargeTestState.Aging;
-                    StartPeriodicWake(stations, log);
-                    log("===== 上电校验通过，进入老化计时；计时结束后由主界面按逆序关闭 =====");
+                    log("===== 上电校验通过，进入老化计时；周期唤醒从启动阶段持续发送，计时结束后由主界面按逆序关闭 =====");
                 }
                 catch
                 {
@@ -195,20 +194,24 @@ namespace AgingTest.Models
             small.SetOutputOnOff(false);
             await Task.Delay(200, ct);
 
-            // 1. 电子负载前提：VON=2V，恒流 5A
-            log($"① 电子负载：VON={_cfg.LoadVonVolt:0.###}V，限流={_cfg.LoadCurrentA:0.###}A");
+            // 1. 电子负载前提：VON=2V，恒流 5A（每个负载一次性设置全部 32 通道，不再按工位逐通道设置）
+            log($"① 电子负载：全部通道 VON={_cfg.LoadVonVolt:0.###}V，限流={_cfg.LoadCurrentA:0.###}A");
+            var loadParam = new GJDA10032.ChSetParam
+            {
+                Mode = 4,                       // CCFast
+                VonVolt = _cfg.LoadVonVolt,
+                SetValue = _cfg.LoadCurrentA,
+                ExtraParam = 0
+            };
+            var configuredLoads = new HashSet<int>();
             foreach (var st in stations)
             {
                 var load = DeviceComm.Loads.FirstOrDefault(l => l.Cfg.DevId == st.LoadDevId)?.Handle
                            ?? throw new InvalidOperationException($"负载{st.LoadDevId}未连接");
-                load.SetSingleChannel(st.LoadCh, new GJDA10032.ChSetParam
-                {
-                    Mode = 4,                       // CCFast
-                    VonVolt = _cfg.LoadVonVolt,
-                    SetValue = _cfg.LoadCurrentA,
-                    ExtraParam = 0
-                }, false);
-                log($"   工位{st.Station.Code} → 负载{st.LoadDevId} CH{st.LoadCh} 设置完成");
+                if (!configuredLoads.Add(st.LoadDevId)) continue;
+
+                load.SetAll32Channels(loadParam, false);
+                log($"   负载{st.LoadDevId} → 全部 32 通道一次性设置完成（VON={_cfg.LoadVonVolt:0.###}V，限流={_cfg.LoadCurrentA:0.###}A）");
             }
 
             // 2. 小电源 12.8V 输出，给 BMS 供电
@@ -221,7 +224,7 @@ namespace AgingTest.Models
             // 3. 继电器唤醒 + CAN 网络管理唤醒
             log("③ 唤醒 BMS：继电器 CTL18/CTL20 + CAN 0x400 网络管理报文");
             foreach (var st in stations)
-                await WakeOneAsync(st, log);
+                await WakeOneAsync(st, stations, log);
 
             // 4. 电阻模拟电芯温度 10kΩ
             uint ohms = (uint)Math.Round(_cfg.CellTempResistanceKOhm * 1000);
@@ -329,7 +332,11 @@ namespace AgingTest.Models
         // ================================================================
         // 唤醒单个工位
         // ================================================================
-        private async Task WakeOneAsync(ChargeStationMap st, Action<string> log)
+        /// <summary>
+        /// 唤醒单个工位：闭合唤醒继电器后，等待周期 0x400 的回复。
+        /// 0x400 周期任务在第一次唤醒时启动，之后从启动阶段一直每 2 秒发到停止/故障回退。
+        /// </summary>
+        private async Task WakeOneAsync(ChargeStationMap st, IReadOnlyList<ChargeStationMap> allStations, Action<string> log)
         {
             var ct = CancellationToken.None;
             bool relayOn = false;
@@ -350,27 +357,21 @@ namespace AgingTest.Models
                 CanComm.FrameReceived += OnFrame;
                 try
                 {
-                    DateTime deadline = DateTime.Now.AddMilliseconds(_cfg.WakeTimeoutMs);
-                    int sent = 0;
-                    while (DateTime.Now < deadline)
-                    {
-                        if (!BmsEolService.SendWakeupFrame(st.CanIndex, st.CanChannel, false))
-                            throw new InvalidOperationException(
-                                $"工位{st.Station.Code} 唤醒报文发送失败（CAN{st.CanIndex}/CH{st.CanChannel} 未启动？）");
-                        sent++;
+                    // 第一次唤醒时启动全局周期发送；后续工位直接复用，避免每个工位各自再发一遍。
+                    if (_wakeTask == null || _wakeTask.IsCompleted)
+                        StartPeriodicWake(allStations, log);
 
-                        var delay = Task.Delay(_cfg.WakeIntervalMs, ct);
-                        var completed = await Task.WhenAny(tcs.Task, delay);
-                        if (completed == tcs.Task)
-                        {
-                            var f = await tcs.Task;
-                            log($"   工位{st.Station.Code} → 收到 BMS 回复 0x{f.Id:X}（{f.Kind}，{f.DataText}），唤醒成功");
-                            return;
-                        }
+                    log($"   工位{st.Station.Code} → 等待 0x400 周期唤醒回复（每 {Math.Max(2000, _cfg.WakeRepeatIntervalMs)}ms）");
+                    var completed = await Task.WhenAny(tcs.Task, Task.Delay(_cfg.WakeTimeoutMs, ct));
+                    if (completed == tcs.Task)
+                    {
+                        var f = await tcs.Task;
+                        log($"   工位{st.Station.Code} → 收到 BMS 回复 0x{f.Id:X}（{f.Kind}，{f.DataText}），唤醒成功");
+                        return;
                     }
 
                     throw new TimeoutException(
-                        $"工位{st.Station.Code} 唤醒超时：{_cfg.WakeTimeoutMs}ms 内发送 {sent} 帧 0x400，未收到 CAN{st.CanIndex}/CH{st.CanChannel} 回复");
+                        $"工位{st.Station.Code} 唤醒超时：{_cfg.WakeTimeoutMs}ms 内未收到 CAN{st.CanIndex}/CH{st.CanChannel} 回复（0x400 周期任务仍在运行）");
                 }
                 finally
                 {
@@ -552,13 +553,13 @@ namespace AgingTest.Models
             return client;
         }
 
-        /// <summary>老化开始后按固定周期持续发送 0x400 唤醒报文，直到停止/故障回退。</summary>
+        /// <summary>从启动阶段开始按固定周期持续发送 0x400 唤醒报文，直到停止/故障回退。</summary>
         private void StartPeriodicWake(IReadOnlyList<ChargeStationMap> stations, Action<string> log)
         {
             StopPeriodicWake(null);
             if (stations.Count == 0) return;
 
-            int interval = Math.Max(500, _cfg.WakeRepeatIntervalMs);
+            int interval = Math.Max(2000, _cfg.WakeRepeatIntervalMs);
             var cts = new CancellationTokenSource();
             _wakeCts = cts;
             log($"唤醒报文周期发送已启动：{stations.Count} 个工位，每 {interval}ms 一帧 0x400");

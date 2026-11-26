@@ -399,6 +399,14 @@ namespace Common.SerialportHelper
             SendFrameAndReceive(DeviceAddress, cid, infoBuf.ToArray(), true);
         }
 
+        /// <summary>设置全部 32 通道为同一组参数（1-16 与 17-32 两条批量命令连续下发）。</summary>
+        public void SetAll32Channels(ChSetParam param, bool saveE2Rom)
+        {
+            var list = Enumerable.Repeat(param, 16).ToList();
+            SetBatch1To16Channel(list, saveE2Rom);
+            SetBatch17To32Channel(list, saveE2Rom);
+        }
+
         /// <summary>单通道设置，通道号、参数全部外部传入</summary>
         public void SetSingleChannel(int chNo, ChSetParam param, bool saveE2Rom)
         {

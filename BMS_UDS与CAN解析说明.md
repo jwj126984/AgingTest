@@ -110,12 +110,12 @@ mgr.Dispose();                              // 停保活、释放全部客户端
 
 | 报文 | 周期 | 启动时机 | 停止时机 |
 |---|---|---|---|
-| 唤醒 `0x400`（8 字节 0，经典 CAN） | **2000ms**（`ChargeTestSetting.WakeRepeatIntervalMs`） | 上电前序电流校验通过、状态进入 `Aging` 后 | `StopAsync` 进入时立即停；启动失败回退时也停 |
+| 唤醒 `0x400`（8 字节 0，经典 CAN） | **2000ms**（`ChargeTestSetting.WakeRepeatIntervalMs`，最小 2000） | 启动阶段第一次唤醒、继电器 CTL18/20 闭合后立即启动，之后持续到老化结束 | `StopAsync` 进入时立即停；启动失败回退时也停 |
 | 会话维持 `3E 80` | 2000ms（`UdsStationManager.StartKeepAlive`） | 首个工位 `10 03` 解锁后 | `738F` 确认 MOS 断开后停；异常停止在 `finally` 关闭 UDS 时也会停 |
 
 - 会话维持 `3E 80` 默认**不逐帧写界面日志**（`TesterPresent` 临时关闭 `IsoTpTransport.LogEnabled`），只在启动/停止各记录一条；老化报文的收发在对应工位的 `DataMonitorWindow` 中按 CAN 盒/通道显示。
 
-- 启动阶段的 `0x400` 仍按 500ms 重发，直到收到 BMS 回复；进入老化后改为每 2s 持续发送。
+- `0x400` 从**启动阶段的第一次唤醒**就开始按 2s 周期持续发送（`WakeRepeatIntervalMs=2000`，代码强制最小 2000ms），不再按 500ms 重发；启动完成进入老化后继续按 2s 发送。
 - `ChargeTestService` 内部用 `CancellationTokenSource` 管理周期唤醒任务，`StopPeriodicWake` 会取消并等待任务退出。
 - 结束测试、手动停止、启动失败回退、窗口退出都会调用停止逻辑，不会遗留唤醒/会话维持报文。
 

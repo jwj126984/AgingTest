@@ -80,8 +80,7 @@ namespace AgingTest.Models
 
         // 唤醒
         public int WakeTimeoutMs { get; set; } = 3000;
-        public int WakeIntervalMs { get; set; } = 500;
-        /// <summary>进入老化后周期发送唤醒报文 0x400 的间隔（ms）。</summary>
+        /// <summary>从启动阶段到老化结束统一使用的唤醒报文 0x400 周期（ms），代码强制最小 2000。</summary>
         public int WakeRepeatIntervalMs { get; set; } = 2000;
 
         // 电阻模拟电芯温度

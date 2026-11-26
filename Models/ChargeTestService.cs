@@ -41,6 +41,10 @@ namespace AgingTest.Models
         public int ActiveLayer => _activeLayer;
         public IReadOnlyList<ChargeStationMap> ActiveStations => _activeStations;
 
+        /// <summary>数据监控窗口复用本层已建立的 UDS 客户端，避免同一 CAN 通道上多个客户端互相抢响应。</summary>
+        public UdsClient? GetUdsClient(int stationNo)
+            => _uds.TryGetValue(stationNo, out var st) ? st.Client : null;
+
         public ChargeTestService(ChargeTestSetting cfg)
         {
             _cfg = cfg;

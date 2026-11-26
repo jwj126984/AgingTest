@@ -94,6 +94,10 @@ namespace AgingTest.Models
 
         private Thread? _keepAliveThread;
         private volatile bool _keepAliveRunning;
+        private readonly object _requestSync = new();
+
+        /// <summary>同一客户端上串行化 22 读取、2F 控制与 3E 保活，避免请求/响应交叉。</summary>
+        internal object SyncRoot => _requestSync;
 
         public UdsClient(int canIndex, int channel, uint requestId = 0x775, uint responseId = 0x77D,
             bool isFd = true, bool isExt = false)
@@ -108,15 +112,18 @@ namespace AgingTest.Models
 
         public byte[] Request(int? timeoutMs, params byte[] pdu)
         {
-            byte[] resp = Transport.Request(pdu, timeoutMs ?? TimeoutMs);
-            if (resp.Length == 0) throw new UdsNegativeResponseException(pdu[0], 0x10);
-            if (resp[0] == 0x7F)
+            lock (_requestSync)
             {
-                byte serviceId = resp.Length > 1 ? resp[1] : pdu[0];
-                byte nrc = resp.Length > 2 ? resp[2] : (byte)0x10;
-                throw new UdsNegativeResponseException(serviceId, nrc);
+                byte[] resp = Transport.Request(pdu, timeoutMs ?? TimeoutMs);
+                if (resp.Length == 0) throw new UdsNegativeResponseException(pdu[0], 0x10);
+                if (resp[0] == 0x7F)
+                {
+                    byte serviceId = resp.Length > 1 ? resp[1] : pdu[0];
+                    byte nrc = resp.Length > 2 ? resp[2] : (byte)0x10;
+                    throw new UdsNegativeResponseException(serviceId, nrc);
+                }
+                return resp;
             }
-            return resp;
         }
 
         // ================================================================
@@ -267,20 +274,23 @@ namespace AgingTest.Models
         /// <summary>3E 80：保持会话（S3=5000ms，附录1）。抑制正响应时只发不等回；默认不逐帧写日志，避免界面刷屏。</summary>
         public byte[] TesterPresent(bool suppressPositiveResponse = true, bool writeLog = false)
         {
-            bool oldLog = Transport.LogEnabled;
-            Transport.LogEnabled = writeLog;
-            try
+            lock (_requestSync)
             {
-                if (suppressPositiveResponse)
+                bool oldLog = Transport.LogEnabled;
+                Transport.LogEnabled = writeLog;
+                try
                 {
-                    Transport.SendOnly(new byte[] { 0x3E, 0x80 });
-                    return new byte[] { 0x7E, 0x00 };
+                    if (suppressPositiveResponse)
+                    {
+                        Transport.SendOnly(new byte[] { 0x3E, 0x80 });
+                        return new byte[] { 0x7E, 0x00 };
+                    }
+                    return Request(0x3E, 0x00);
                 }
-                return Request(0x3E, 0x00);
-            }
-            finally
-            {
-                Transport.LogEnabled = oldLog;
+                finally
+                {
+                    Transport.LogEnabled = oldLog;
+                }
             }
         }
 

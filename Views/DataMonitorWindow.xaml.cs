@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -12,20 +14,27 @@ using AgingTest.Models;
 namespace AgingTest.Views
 {
     /// <summary>
-    /// 数据监控详情窗口：按文档《产品功能说明》设计。
-    /// 数据区：单体电压4通道 / 总压2通道(MOS内外) / 温度2通道 / MOS温度 / 电流 / 工作电压 / 工作温度 / 工作功耗 / SOC / SOH / 均衡电流 / 故障诊断。
-    /// 控制区：MOS闭合/断开、4路被动均衡、浅/深休眠、CAN/低电平/帮电唤醒（当前为模拟下发，设备通讯接入后替换为真实指令）。
+    /// 数据监控详情窗口：
+    /// 数据区全部来自 BMS UDS 22 读取（附录1-数据解析），由老化流程已建立的 UdsClient 提供；
+    /// 电源区显示本工位所在层的大电流电源 N36190 与高精度电源 N36620 回采电压/电流。
+    /// 不再提供 MOS 控制、均衡管理、休眠唤醒、通信信息等手工控制/说明区域。
     /// </summary>
     public partial class DataMonitorWindow : Window
     {
         private const int MaxPoints = 60;
+        private const int PollIntervalMs = 2000;
 
         private readonly WorkStation _ws;
+        private readonly Func<int, UdsClient?>? _udsProvider;
         private readonly DispatcherTimer _timer;
-        private readonly Random _rnd = new();
         private readonly int _canIndex;
         private readonly int _canChannel;
         private readonly ObservableCollection<CanFrameRow> _frames = new();
+        private readonly MonitorSnapshot _snap = new();
+
+        private CancellationTokenSource? _pollCts;
+        private Task? _pollTask;
+        private bool _pollStarted;
         private bool _closed;
 
         private readonly List<double> _voltSeries = new();
@@ -34,10 +43,11 @@ namespace AgingTest.Views
 
         private long _refreshCount;
 
-        public DataMonitorWindow(WorkStation ws)
+        public DataMonitorWindow(WorkStation ws, Func<int, UdsClient?>? udsProvider = null)
         {
             InitializeComponent();
             _ws = ws;
+            _udsProvider = udsProvider;
             (_canIndex, _canChannel) = ResolveCan(ws.StationNo);
             GridCanFrames.ItemsSource = _frames;
 
@@ -45,14 +55,9 @@ namespace AgingTest.Views
             TxtDetailStation.Text = ws.Code;
             TxtDetailProduct.Text = string.IsNullOrEmpty(ws.ProductCode) ? "未绑定" : ws.ProductCode;
             TxtCanLink.Text = $"CAN{_canIndex} / CH{_canChannel}";
-
-            if (ws.Soc < 1) ws.Soc = 85;
-            if (ws.Soh < 1) ws.Soh = 95;
-
-            // 初始控制状态同步
-            UpdateMosState();
-            UpdateSleepState();
-            UpdateBalanceState();
+            TxtPowerLayer.Text = $"第 {ws.Layer} 层";
+            TxtUdsState.Text = "未连接";
+            TxtDetailCount.Text = "刷新 0";
 
             _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             _timer.Tick += (_, _) => Tick();
@@ -64,10 +69,12 @@ namespace AgingTest.Views
                 _closed = true;
                 _timer.Stop();
                 CanComm.FrameReceived -= OnCanFrame;
+                try { _pollCts?.Cancel(); } catch { }
             };
             Loaded += (_, _) =>
             {
                 UpdateCanLinkState();
+                StartPolling();
                 Tick();
             };
         }
@@ -77,12 +84,10 @@ namespace AgingTest.Views
         private void Tick()
         {
             _refreshCount++;
-            TxtDetailCount.Text = _refreshCount.ToString();
+            TxtDetailCount.Text = $"刷新 {_refreshCount}";
 
             bool aging = _ws.State == WorkStationState.Aging;
-            bool rt = _ws.State == WorkStationState.RTAging;
 
-            // 顶部状态
             TxtDetailState.Text = _ws.State switch
             {
                 WorkStationState.Idle => "空闲",
@@ -103,7 +108,6 @@ namespace AgingTest.Views
             TxtDetailType.Text = _ws.TestType;
             TxtDetailRemain.Text = _ws.RemainTime.HasValue ? $"{_ws.RemainTime.Value:hh\\:mm\\:ss}" : "--";
 
-            // 老化步骤显示（按《BMS老化测试项》流程）
             if (aging)
             {
                 string phase = string.IsNullOrWhiteSpace(_ws.AgingPhaseText)
@@ -118,92 +122,251 @@ namespace AgingTest.Views
                 TxtDetailAgingStep.Foreground = new SolidColorBrush(Color.FromRgb(0xAF, 0xC4, 0xE8));
             }
 
-            // ---- 模拟采集数据（设备通讯接入后替换为真实数据）----
-            double baseTemp = aging ? 80 : 25;
-            for (int i = 0; i < 4; i++)
-            {
-                if (_ws.CellVoltages[i] < 3.0) _ws.CellVoltages[i] = 3.2 + _rnd.NextDouble() * 1.0;
-                _ws.CellVoltages[i] = Clamp(_ws.CellVoltages[i] + (_rnd.NextDouble() - 0.5) * 0.02, 3.0, 4.5);
-            }
-            for (int i = 0; i < 2; i++)
-            {
-                if (_ws.CellTemps[i] < 1) _ws.CellTemps[i] = baseTemp + (_rnd.NextDouble() - 0.5) * 2;
-                _ws.CellTemps[i] = Clamp(_ws.CellTemps[i] + (_rnd.NextDouble() - 0.5) * 0.3, -40, 125);
-            }
-            _ws.MosTemp = _ws.CellTemps[0] + 8 + _rnd.NextDouble() * 4;
-            _ws.InnerVoltage = 12 + (_rnd.NextDouble() - 0.5) * 0.4;
-            _ws.OuterVoltage = _ws.InnerVoltage + (_rnd.NextDouble() - 0.5) * 0.1;
-            // 电流：测试中由主界面老化/常温流程驱动（带载/休眠/唤醒按步骤变化），详情页仅显示
-            if (_ws.State is not (WorkStationState.RTAging or WorkStationState.Aging))
-                _ws.Current = Clamp(_ws.Current + (_rnd.NextDouble() - 0.5) * 0.6, 0, 8);
-            _ws.WorkVoltage = 12 + (_rnd.NextDouble() - 0.5) * 0.6;              // 6~18V
-            _ws.WorkTemp = baseTemp + (_rnd.NextDouble() - 0.5) * 2;              // -40~105℃
-            _ws.WorkPower = 40 + _rnd.NextDouble() * 50;                          // <100mA
-            _ws.Soc = Clamp(_ws.Soc + (_rnd.NextDouble() - 0.5) * 0.1, 5, 100);
-            _ws.Soh = Clamp(_ws.Soh + (_rnd.NextDouble() - 0.5) * 0.02, 80, 100);
-            _ws.FaultInfo = "";
+            RenderData(pushCharts: true);
+            UpdateCanLinkState();
+        }
 
-            double balSum = 0; int balOn = 0;
-            for (int i = 0; i < 4; i++)
-            {
-                if (_ws.BalanceOn[i])
-                {
-                    _ws.BalanceCurrents[i] = 40 + _rnd.NextDouble() * 80;         // 40~120mA
-                    balSum += _ws.BalanceCurrents[i]; balOn++;
-                }
-                else _ws.BalanceCurrents[i] = 0;
-            }
+        /// <summary>把后台读取到的真实值刷到界面；pushCharts=true 时同时推进曲线。</summary>
+        private void RenderData(bool pushCharts)
+        {
+            TxtV1.Text = FormatVoltage(_snap.Cell1, 3);
+            TxtV2.Text = FormatVoltage(_snap.Cell2, 3);
+            TxtV3.Text = FormatVoltage(_snap.Cell3, 3);
+            TxtV4.Text = FormatVoltage(_snap.Cell4, 3);
+            TxtInnerV.Text = FormatVoltage(_snap.InnerV, 2);
+            TxtOuterV.Text = FormatVoltage(_snap.OuterV, 2);
+            TxtCurr.Text = FormatCurrent(_snap.Current);
+            TxtSoc.Text = FormatPercent(_snap.Soc);
 
-            // ---- 更新数据卡片 ----
-            TxtV1.Text = $"{_ws.CellVoltages[0]:F3} V";
-            TxtV2.Text = $"{_ws.CellVoltages[1]:F3} V";
-            TxtV3.Text = $"{_ws.CellVoltages[2]:F3} V";
-            TxtV4.Text = $"{_ws.CellVoltages[3]:F3} V";
-            TxtInnerV.Text = $"{_ws.InnerVoltage:F2} V";
-            TxtOuterV.Text = $"{_ws.OuterVoltage:F2} V";
-            TxtCurr.Text = $"{_ws.Current:F2} A";
-            TxtWorkV.Text = $"{_ws.WorkVoltage:F1} V";
-            TxtT1.Text = $"{_ws.CellTemps[0]:F1} ℃";
-            TxtT2.Text = $"{_ws.CellTemps[1]:F1} ℃";
-            TxtMosT.Text = $"{_ws.MosTemp:F1} ℃";
-            TxtWorkT.Text = $"{_ws.WorkTemp:F1} ℃";
-            TxtSoc.Text = $"{_ws.Soc:F1} %";
-            TxtSoh.Text = $"{_ws.Soh:F1} %";
-            TxtWorkP.Text = $"{_ws.WorkPower:F0} mA";
-            TxtBalance.Text = balOn > 0 ? $"{balSum / balOn:F0} mA (×{balOn})" : "0 mA";
+            TxtT1.Text = FormatTemp(_snap.CellTemp1);
+            TxtT2.Text = FormatTemp(_snap.CellTemp2);
+            TxtChargeMosT.Text = FormatTemp(_snap.ChargeMosTemp);
+            TxtDischargeMosT.Text = FormatTemp(_snap.DischargeMosTemp);
+            TxtBuckT.Text = FormatTemp(_snap.BuckTemp);
+            TxtBoardT.Text = FormatTemp(_snap.BoardTemp);
+            TxtCellDelta.Text = FormatCellDelta(_snap);
+            TxtPackDelta.Text = FormatPackDelta(_snap);
+
+            TxtBigV.Text = FormatVoltage(_snap.BigV, 2);
+            TxtBigA.Text = FormatCurrent(_snap.BigA);
+            TxtSmallV.Text = FormatVoltage(_snap.SmallV, 2);
+            TxtSmallA.Text = FormatCurrent(_snap.SmallA);
+            TxtPowerLayer.ToolTip = _snap.PowerDetail;
+
+            TxtUdsState.Text = _snap.UdsStatus;
+            TxtUdsState.ToolTip = _snap.UdsDetail;
+            TxtUdsState.Foreground = new SolidColorBrush(_snap.UdsOk
+                ? Color.FromRgb(0x7E, 0xE0, 0xA0)
+                : _snap.UdsStatus.StartsWith("未连接", StringComparison.Ordinal)
+                    ? Color.FromRgb(0xAF, 0xC4, 0xE8)
+                    : Color.FromRgb(0xFF, 0xB4, 0x9A));
 
             TxtDetailFault.Text = string.IsNullOrEmpty(_ws.FaultInfo) ? "正常" : _ws.FaultInfo;
             TxtDetailFault.Foreground = new SolidColorBrush(string.IsNullOrEmpty(_ws.FaultInfo)
                 ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xC0, 0x39, 0x2B));
 
-
-            // DTC 故障码（文档要求实时监控 DTC 信息）
             TxtDetailDtc.Text = string.IsNullOrEmpty(_ws.DtcInfo) || _ws.DtcInfo == "无" ? "无" : _ws.DtcInfo;
             TxtDetailDtc.Foreground = new SolidColorBrush(string.IsNullOrEmpty(_ws.DtcInfo) || _ws.DtcInfo == "无"
                 ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xC0, 0x39, 0x2B));
 
-
-            // 均衡失效自诊断（模拟：小概率失效演示）
-            _ws.BalanceFault = _rnd.NextDouble() < 0.02;
-            TxtBalDiag.Text = _ws.BalanceFault ? "失效！" : "正常";
-            TxtBalDiag.Foreground = new SolidColorBrush(_ws.BalanceFault
-                ? Color.FromRgb(0xE5, 0x48, 0x4D) : Color.FromRgb(0x2F, 0xA8, 0x4F));
-
-            // ---- 曲线 ----
-            Push(_voltSeries, _ws.CellVoltages[0]);
-            Push(_tempSeries, _ws.CellTemps[0]);
-            Push(_currSeries, _ws.Current);
+            if (!pushCharts) return;
+            if (!double.IsNaN(_snap.Cell1)) Push(_voltSeries, _snap.Cell1);
+            if (!double.IsNaN(_snap.CellTemp1)) Push(_tempSeries, _snap.CellTemp1);
+            if (!double.IsNaN(_snap.Current)) Push(_currSeries, _snap.Current);
             UpdatePolyline(LineVoltage, CanvasVoltage, _voltSeries, 3.0, 4.5);
             UpdatePolyline(LineTemp, CanvasTemp, _tempSeries, 0, 100);
             UpdatePolyline(LineCurrent, CanvasCurrent, _currSeries, 0, 10);
-            TxtCurV.Text = $"{_ws.CellVoltages[0]:F2}V";
-            TxtCurT.Text = $"{_ws.CellTemps[0]:F1}℃";
-            TxtCurI.Text = $"{_ws.Current:F2}A";
+            TxtCurV.Text = FormatVoltage(_snap.Cell1, 2);
+            TxtCurT.Text = FormatTemp(_snap.CellTemp1);
+            TxtCurI.Text = FormatCurrent(_snap.Current);
+        }
 
-            // 老化流程自动驱动 MOS/休眠状态时，同步刷新指示灯与状态文本
-            UpdateMosState();
-            UpdateSleepState();
-            UpdateCanLinkState();
+        // ==================== UDS / 电源后台读取 ====================
+
+        private void StartPolling()
+        {
+            if (_pollStarted) return;
+            _pollStarted = true;
+            _pollCts = new CancellationTokenSource();
+            _pollTask = Task.Run(() => PollLoopAsync(_pollCts.Token));
+        }
+
+        private async Task PollLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && !_closed)
+            {
+                var snap = new MonitorSnapshot();
+                try
+                {
+                    var uds = _udsProvider?.Invoke(_ws.StationNo);
+                    if (uds == null)
+                    {
+                        snap.UdsStatus = "未连接";
+                        snap.UdsDetail = "启动老化后复用该工位的 UDS 客户端读取";
+                    }
+                    else
+                    {
+                        var errors = new List<string>();
+                        ReadUdsSnapshot(uds, snap, errors);
+                        snap.UdsOk = errors.Count == 0;
+                        snap.UdsStatus = snap.UdsOk
+                            ? $"正常 {DateTime.Now:HH:mm:ss}"
+                            : $"部分失败 {errors.Count} 项";
+                        snap.UdsDetail = string.Join(Environment.NewLine, errors.Take(8));
+                    }
+
+                    ReadPowerSnapshot(snap);
+                }
+                catch (Exception ex)
+                {
+                    snap.UdsOk = false;
+                    snap.UdsStatus = "读取异常";
+                    snap.UdsDetail = ex.Message;
+                }
+
+                if (_closed) return;
+                try
+                {
+                    await Dispatcher.InvokeAsync(() => ApplySnapshot(snap));
+                }
+                catch (TaskCanceledException) { return; }
+
+                try { await Task.Delay(PollIntervalMs, ct); }
+                catch (TaskCanceledException) { return; }
+            }
+        }
+
+        /// <summary>按附录1 读取并解析模拟量 DID；读取期间关闭逐帧日志，避免刷主界面。</summary>
+        private static void ReadUdsSnapshot(UdsClient uds, MonitorSnapshot snap, List<string> errors)
+        {
+            lock (uds.SyncRoot)
+            {
+                bool oldLog = uds.Transport.LogEnabled;
+                uds.Transport.LogEnabled = false;
+                try
+                {
+                    snap.Cell1 = ReadNumeric(uds, BmsDids.CellVoltage1, errors);
+                    snap.Cell2 = ReadNumeric(uds, BmsDids.CellVoltage2, errors);
+                    snap.Cell3 = ReadNumeric(uds, BmsDids.CellVoltage3, errors);
+                    snap.Cell4 = ReadNumeric(uds, BmsDids.CellVoltage4, errors);
+                    snap.InnerV = ReadNumeric(uds, BmsDids.InnerVoltage, errors);
+                    snap.OuterV = ReadNumeric(uds, BmsDids.OuterVoltage, errors);
+                    snap.Current = ReadNumeric(uds, BmsDids.Current, errors);
+                    snap.Soc = ReadNumeric(uds, BmsDids.Soc, errors);
+                    snap.CellTemp1 = ReadNumeric(uds, BmsDids.CellTemp0, errors);
+                    snap.CellTemp2 = ReadNumeric(uds, BmsDids.CellTemp1, errors);
+                    snap.ChargeMosTemp = ReadNumeric(uds, BmsDids.ChargeMosTemp, errors);
+                    snap.DischargeMosTemp = ReadNumeric(uds, BmsDids.DischargeMosTemp, errors);
+                    snap.BuckTemp = ReadNumeric(uds, BmsDids.BuckTemp, errors);
+                    snap.BoardTemp = ReadNumeric(uds, BmsDids.BoardTemp, errors);
+                }
+                finally
+                {
+                    uds.Transport.LogEnabled = oldLog;
+                }
+            }
+        }
+
+        private static double ReadNumeric(UdsClient uds, ushort did, List<string> errors)
+        {
+            try
+            {
+                var v = BmsEolService.ReadDid(uds, did);
+                if (v.Ok && !double.IsNaN(v.Numeric)) return v.Numeric;
+                errors.Add($"{v.DidText}：{v.Text}");
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"0x{did:X4}：{ex.Message}");
+            }
+            return double.NaN;
+        }
+
+        private void ReadPowerSnapshot(MonitorSnapshot snap)
+        {
+            var errors = new List<string>();
+            int layer = _ws.Layer;
+
+            if (DeviceComm.N36100.Count >= layer && DeviceComm.N36100[layer - 1].Connected)
+            {
+                var client = DeviceComm.N36100[layer - 1].Client;
+                snap.BigV = SafeRead(client.MeasVoltage, errors, "N36190 电压");
+                snap.BigA = SafeRead(client.MeasCurrent, errors, "N36190 电流");
+            }
+            else
+            {
+                errors.Add("N36190 未连接");
+            }
+
+            if (DeviceComm.N36600.Count >= layer && DeviceComm.N36600[layer - 1].Connected)
+            {
+                var client = DeviceComm.N36600[layer - 1].Client;
+                snap.SmallV = SafeRead(client.MeasVoltage, errors, "N36620 电压");
+                snap.SmallA = SafeRead(client.MeasCurrent, errors, "N36620 电流");
+            }
+            else
+            {
+                errors.Add("N36620 未连接");
+            }
+
+            snap.PowerDetail = string.Join(Environment.NewLine, errors);
+        }
+
+        private static double SafeRead(Func<double> read, List<string> errors, string label)
+        {
+            try
+            {
+                double v = read();
+                if (double.IsNaN(v)) errors.Add($"{label} 返回 NaN");
+                return v;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{label}：{ex.Message}");
+                return double.NaN;
+            }
+        }
+
+        private void ApplySnapshot(MonitorSnapshot snap)
+        {
+            if (_closed) return;
+
+            _snap.Cell1 = snap.Cell1;
+            _snap.Cell2 = snap.Cell2;
+            _snap.Cell3 = snap.Cell3;
+            _snap.Cell4 = snap.Cell4;
+            _snap.InnerV = snap.InnerV;
+            _snap.OuterV = snap.OuterV;
+            _snap.Current = snap.Current;
+            _snap.Soc = snap.Soc;
+            _snap.CellTemp1 = snap.CellTemp1;
+            _snap.CellTemp2 = snap.CellTemp2;
+            _snap.ChargeMosTemp = snap.ChargeMosTemp;
+            _snap.DischargeMosTemp = snap.DischargeMosTemp;
+            _snap.BuckTemp = snap.BuckTemp;
+            _snap.BoardTemp = snap.BoardTemp;
+            _snap.BigV = snap.BigV;
+            _snap.BigA = snap.BigA;
+            _snap.SmallV = snap.SmallV;
+            _snap.SmallA = snap.SmallA;
+            _snap.UdsOk = snap.UdsOk;
+            _snap.UdsStatus = snap.UdsStatus;
+            _snap.UdsDetail = snap.UdsDetail;
+            _snap.PowerDetail = snap.PowerDetail;
+
+            if (!double.IsNaN(snap.Cell1)) _ws.CellVoltages[0] = snap.Cell1;
+            if (!double.IsNaN(snap.Cell2)) _ws.CellVoltages[1] = snap.Cell2;
+            if (!double.IsNaN(snap.Cell3)) _ws.CellVoltages[2] = snap.Cell3;
+            if (!double.IsNaN(snap.Cell4)) _ws.CellVoltages[3] = snap.Cell4;
+            if (!double.IsNaN(snap.CellTemp1)) _ws.CellTemps[0] = snap.CellTemp1;
+            if (!double.IsNaN(snap.CellTemp2)) _ws.CellTemps[1] = snap.CellTemp2;
+            if (!double.IsNaN(snap.InnerV)) _ws.InnerVoltage = snap.InnerV;
+            if (!double.IsNaN(snap.OuterV)) _ws.OuterVoltage = snap.OuterV;
+            if (!double.IsNaN(snap.Current)) _ws.Current = snap.Current;
+            if (!double.IsNaN(snap.Soc)) _ws.Soc = snap.Soc;
+            if (!double.IsNaN(snap.ChargeMosTemp)) _ws.MosTemp = snap.ChargeMosTemp;
+
+            RenderData(pushCharts: false);
         }
 
         // ==================== 本工位 CAN 报文监视 ====================
@@ -270,107 +433,29 @@ namespace AgingTest.Views
             GridCanFrames.ScrollIntoView(row);
         }
 
-        // ==================== 控制功能实现 ====================
+        // ==================== 格式化 ====================
 
-        private void BtnMosClose_Click(object sender, RoutedEventArgs e)
+        private static string FormatVoltage(double value, int digits)
+            => double.IsNaN(value) ? "--" : $"{value.ToString($"F{digits}")} V";
+
+        private static string FormatCurrent(double value)
+            => double.IsNaN(value) ? "--" : $"{value:F2} A";
+
+        private static string FormatTemp(double value)
+            => double.IsNaN(value) ? "--" : $"{value:F1} ℃";
+
+        private static string FormatPercent(double value)
+            => double.IsNaN(value) ? "--" : $"{value:F0} %";
+
+        private static string FormatCellDelta(MonitorSnapshot s)
         {
-            _ws.MosClosed = true;
-            UpdateMosState();
-            Log($"[控制] 工位 {_ws.Code} MOS 闭合（吸合）");
+            double[] cells = { s.Cell1, s.Cell2, s.Cell3, s.Cell4 };
+            if (cells.Any(double.IsNaN)) return "--";
+            return $"{(cells.Max() - cells.Min()) * 1000:F0} mV";
         }
 
-        private void BtnMosOpen_Click(object sender, RoutedEventArgs e)
-        {
-            _ws.MosClosed = false;
-            UpdateMosState();
-            Log($"[控制] 工位 {_ws.Code} MOS 断开");
-        }
-
-        private void Bal_Changed(object sender, RoutedEventArgs e)
-        {
-            var tg = (ToggleButton)sender;
-            int idx = (int)tg.Tag;
-            _ws.BalanceOn[idx] = tg.IsChecked == true;
-            UpdateBalanceState();
-            Log($"[控制] 工位 {_ws.Code} 均衡{idx + 1} {(tg.IsChecked == true ? "开启" : "关闭")}");
-        }
-
-        private void SleepCmd_Click(object sender, RoutedEventArgs e)
-        {
-            // 测试中禁止休眠（老化流程需保持产品工作状态）
-            if (_ws.State is WorkStationState.RTAging or WorkStationState.Aging)
-            {
-                Hint($"工位 {_ws.Code} 测试中，禁止休眠/唤醒操作");
-                return;
-            }
-
-            var tag = (string)((Button)sender).Tag;
-            switch (tag)
-            {
-                case "light":
-                    _ws.SleepMode = 1;
-                    Log($"[控制] 工位 {_ws.Code} 进入浅休眠");
-                    break;
-                case "deep":
-                    _ws.SleepMode = 2;
-                    Log($"[控制] 工位 {_ws.Code} 进入深度休眠");
-                    break;
-                case "wakecan":
-                    _ws.SleepMode = 0;
-                    Log($"[控制] 工位 {_ws.Code} CAN 唤醒");
-                    break;
-                case "wakelow":
-                    _ws.SleepMode = 0;
-                    Log($"[控制] 工位 {_ws.Code} 低电平硬线唤醒（接模拟电池GND）");
-                    break;
-                case "wakepower":
-                    _ws.SleepMode = 0;
-                    Log($"[控制] 工位 {_ws.Code} 帮电唤醒");
-                    break;
-            }
-            UpdateSleepState();
-        }
-
-        private void UpdateMosState()
-        {
-            MosLight.Fill = new SolidColorBrush(_ws.MosClosed
-                ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xB0, 0xB6, 0xC0));
-            TxtMosState.Text = _ws.MosClosed ? "已闭合" : "已断开";
-            TxtMosState.Foreground = new SolidColorBrush(_ws.MosClosed
-                ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0x88, 0x88, 0x88));
-        }
-
-        private void UpdateBalanceState()
-        {
-            for (int i = 0; i < 4; i++)
-            {
-                var tg = i switch { 0 => TogBal1, 1 => TogBal2, 2 => TogBal3, _ => TogBal4 };
-                tg.IsChecked = _ws.BalanceOn[i];
-            }
-        }
-
-        private void UpdateSleepState()
-        {
-            TxtSleepState.Text = _ws.SleepMode switch
-            {
-                1 => "当前状态：浅休眠",
-                2 => "当前状态：深度休眠",
-                _ => "当前状态：正常唤醒"
-            };
-            TxtSleepState.Foreground = new SolidColorBrush(_ws.SleepMode == 0
-                ? Color.FromRgb(0x2F, 0xA8, 0x4F) : Color.FromRgb(0xED, 0x9A, 0x2C));
-        }
-
-        // ==================== 辅助 ====================
-
-        private void Hint(string msg)
-        {
-            TxtDetailFault.Text = msg;
-            TxtDetailFault.Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B));
-        }
-
-        /// <summary>操作日志写回主界面日志区</summary>
-        private void Log(string msg) => (Owner as MainWindow)?.AddLog(msg);
+        private static string FormatPackDelta(MonitorSnapshot s)
+            => double.IsNaN(s.InnerV) || double.IsNaN(s.OuterV) ? "--" : $"{s.OuterV - s.InnerV:F2} V";
 
         private static void Push(List<double> series, double value)
         {
@@ -396,7 +481,32 @@ namespace AgingTest.Views
             }
         }
 
-        private static double Clamp(double v, double min, double max) => v < min ? min : (v > max ? max : v);
+        /// <summary>本窗口一次轮询的快照；NaN 表示该值本次未读到。</summary>
+        private sealed class MonitorSnapshot
+        {
+            public double Cell1 = double.NaN;
+            public double Cell2 = double.NaN;
+            public double Cell3 = double.NaN;
+            public double Cell4 = double.NaN;
+            public double InnerV = double.NaN;
+            public double OuterV = double.NaN;
+            public double Current = double.NaN;
+            public double Soc = double.NaN;
+            public double CellTemp1 = double.NaN;
+            public double CellTemp2 = double.NaN;
+            public double ChargeMosTemp = double.NaN;
+            public double DischargeMosTemp = double.NaN;
+            public double BuckTemp = double.NaN;
+            public double BoardTemp = double.NaN;
+            public double BigV = double.NaN;
+            public double BigA = double.NaN;
+            public double SmallV = double.NaN;
+            public double SmallA = double.NaN;
+            public bool UdsOk;
+            public string UdsStatus = "未连接";
+            public string UdsDetail = "";
+            public string PowerDetail = "";
+        }
     }
 
     /// <summary>DataMonitorWindow 报文列表的一行。</summary>

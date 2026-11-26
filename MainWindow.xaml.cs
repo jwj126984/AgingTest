@@ -285,8 +285,15 @@ namespace AgingTest
         /// <summary>点击工位卡片，打开该工位的数据监控详情窗口（非模态，可同时打开多个）</summary>
         private void OpenDetail(WorkStation ws)
         {
-            var win = new Views.DataMonitorWindow(ws) { Owner = this };
+            var win = new Views.DataMonitorWindow(ws, GetUdsClientForStation) { Owner = this };
             win.Show();
+        }
+
+        /// <summary>数据监控窗口按工位取当前老化服务里的 UDS 客户端；未启动老化时返回 null。</summary>
+        private UdsClient? GetUdsClientForStation(int stationNo)
+        {
+            int layer = (stationNo - 1) / 8 + 1;
+            return _agingServices.TryGetValue(layer, out var svc) ? svc.GetUdsClient(stationNo) : null;
         }
 
         private void BuildStationGrid()

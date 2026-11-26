@@ -65,7 +65,7 @@
                     <ColumnDefinition Width="110"/>
                     <ColumnDefinition Width="140"/>
                     <ColumnDefinition Width="160"/>
-                    <ColumnDefinition Width="80"/>
+                    <ColumnDefinition Width="150"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                     <TextBlock Text="工位" FontSize="11" Foreground="#AFC4E8"/>
@@ -92,13 +92,14 @@
                     <TextBlock x:Name="TxtDetailAgingStep" Text="--" FontSize="13" FontWeight="Bold" Foreground="#FFD9A8" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
                 <StackPanel Grid.Column="6" VerticalAlignment="Center" HorizontalAlignment="Right">
-                    <TextBlock Text="刷新" FontSize="11" Foreground="#AFC4E8"/>
-                    <TextBlock x:Name="TxtDetailCount" Text="0" FontSize="14" Foreground="#FFD9A8"/>
+                    <TextBlock Text="UDS 数据" FontSize="11" Foreground="#AFC4E8"/>
+                    <TextBlock x:Name="TxtUdsState" Text="未连接" FontSize="13" FontWeight="Bold" Foreground="#FFD9A8" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="TxtDetailCount" Text="刷新 0" FontSize="10" Foreground="#AFC4E8"/>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- ===== 数据卡片区（按文档产品功能说明） ===== -->
+        <!-- ===== 实时采集数据（全部来自 BMS UDS 22 服务读取，按附录1 解析） ===== -->
         <Border Grid.Row="1" Background="White" BorderBrush="#D5DCE6" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,8,0,0">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -108,7 +109,7 @@
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- 第1行：单体电压采集 4通道 -->
+                <!-- 第1行：单体电压 4 通道，DID 7397~739A，uint16×0.001 V -->
                 <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource DataCard}" Background="#EAF1FF">
                     <StackPanel><TextBlock Text="单体电压 V1" FontSize="11" Foreground="#5A6B8C"/><TextBlock x:Name="TxtV1" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1F3864" TextAlignment="Center"/></StackPanel>
                 </Border>
@@ -122,121 +123,77 @@
                     <StackPanel><TextBlock Text="单体电压 V4" FontSize="11" Foreground="#5A6B8C"/><TextBlock x:Name="TxtV4" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1F3864" TextAlignment="Center"/></StackPanel>
                 </Border>
 
-                <!-- 第2行：总压2通道 + 电流 + 工作电压 -->
+                <!-- 第2行：总压2通道 + 电流 + SOC，DID 739B/739C/7396/7391 -->
                 <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource DataCard}" Background="#F0ECFF">
-                    <StackPanel><TextBlock Text="内总压 (MOS内)" FontSize="11" Foreground="#5A4A8C"/><TextBlock x:Name="TxtInnerV" Text="--" FontSize="17" FontWeight="Bold" Foreground="#3A2A6C" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="内总压 B+ (739B)" FontSize="11" Foreground="#5A4A8C"/><TextBlock x:Name="TxtInnerV" Text="--" FontSize="17" FontWeight="Bold" Foreground="#3A2A6C" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource DataCard}" Background="#F0ECFF">
-                    <StackPanel><TextBlock Text="外总压 (MOS外)" FontSize="11" Foreground="#5A4A8C"/><TextBlock x:Name="TxtOuterV" Text="--" FontSize="17" FontWeight="Bold" Foreground="#3A2A6C" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="外总压 P+ (739C)" FontSize="11" Foreground="#5A4A8C"/><TextBlock x:Name="TxtOuterV" Text="--" FontSize="17" FontWeight="Bold" Foreground="#3A2A6C" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource DataCard}" Background="#E8F8EF">
-                    <StackPanel><TextBlock Text="电流" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtCurr" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="总电流 (7396)" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtCurr" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="1" Grid.Column="3" Style="{StaticResource DataCard}" Background="#E8F8EF">
-                    <StackPanel><TextBlock Text="工作电压 (6~18V)" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtWorkV" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="SOC (7391)" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtSoc" Text="--" FontSize="17" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
                 </Border>
 
-                <!-- 第3行：温度采集2通道 + MOS温度 + 工作温度 -->
+                <!-- 第3行：电芯温度 + 充/放电 MOS 温度，uint8−40 ℃ -->
                 <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource DataCard}" Background="#FFF3E6">
-                    <StackPanel><TextBlock Text="电芯温度 T1" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtT1" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="电芯温度 T1 (73A3)" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtT1" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource DataCard}" Background="#FFF3E6">
-                    <StackPanel><TextBlock Text="电芯温度 T2" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtT2" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="电芯温度 T2 (73A4)" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtT2" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="2" Grid.Column="2" Style="{StaticResource DataCard}" Background="#FFF3E6">
-                    <StackPanel><TextBlock Text="MOS温度" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtMosT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="充电 MOS 温度 (73A6)" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtChargeMosT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="2" Grid.Column="3" Style="{StaticResource DataCard}" Background="#FFF3E6">
-                    <StackPanel><TextBlock Text="工作温度 (-40~105℃)" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtWorkT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="放电 MOS 温度 (73A5)" FontSize="11" Foreground="#8C6A4A"/><TextBlock x:Name="TxtDischargeMosT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#C0500F" TextAlignment="Center"/></StackPanel>
                 </Border>
 
-                <!-- 第4行：SOC / SOH / 工作功耗 / 均衡电流 -->
+                <!-- 第4行：限流模块/板子温度 + 压差汇总 -->
                 <Border Grid.Row="3" Grid.Column="0" Style="{StaticResource DataCard}" Background="#FDF4EC">
-                    <StackPanel><TextBlock Text="SOC (精度5%)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtSoc" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="限流模块温度 (73A7)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtBuckT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="3" Grid.Column="1" Style="{StaticResource DataCard}" Background="#FDF4EC">
-                    <StackPanel><TextBlock Text="SOH (精度8%)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtSoh" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="板子温度 (73A8)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtBoardT" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="3" Grid.Column="2" Style="{StaticResource DataCard}" Background="#FDF4EC">
-                    <StackPanel><TextBlock Text="工作功耗 (&lt;100mA)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtWorkP" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="单体压差 (Vmax−Vmin)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtCellDelta" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
                 </Border>
                 <Border Grid.Row="3" Grid.Column="3" Style="{StaticResource DataCard}" Background="#FDF4EC">
-                    <StackPanel><TextBlock Text="均衡电流 (40~120mA)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtBalance" Text="0 mA" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
+                    <StackPanel><TextBlock Text="总压差 (P+−B+)" FontSize="11" Foreground="#8C6A3A"/><TextBlock x:Name="TxtPackDelta" Text="--" FontSize="17" FontWeight="Bold" Foreground="#B06610" TextAlignment="Center"/></StackPanel>
                 </Border>
             </Grid>
         </Border>
 
-        <!-- ===== 控制功能区 ===== -->
-        <Border Grid.Row="2" Background="White" BorderBrush="#D5DCE6" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,8,0,0">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-
-                <!-- MOS / 继电器控制 -->
-                <Border Grid.Row="0" Grid.Column="0" Background="#F7F9FC" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,0,4,4">
-                    <StackPanel>
-                        <TextBlock Text="MOS / 继电器控制" Style="{StaticResource SectionTitle}"/>
-                        <StackPanel Orientation="Horizontal">
-                            <Button x:Name="BtnMosClose" Content="MOS 闭合" Style="{StaticResource CtrlButton}" Background="#2FA84F" Click="BtnMosClose_Click" AutomationProperties.AutomationId="BtnMosClose"/>
-                            <Button x:Name="BtnMosOpen" Content="MOS 断开" Style="{StaticResource CtrlButton}" Background="#E5484D" Click="BtnMosOpen_Click" AutomationProperties.AutomationId="BtnMosOpen"/>
-                            <Ellipse x:Name="MosLight" Width="12" Height="12" Fill="#B0B6C0" VerticalAlignment="Center" Margin="2,0,6,0"/>
-                            <TextBlock x:Name="TxtMosState" Text="已断开" FontSize="12" FontWeight="Bold" Foreground="#888" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <TextBlock Text="带载条件：BMS 输入正常、MOS 闭合" FontSize="10" Foreground="#999" Margin="0,3,0,0"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 均衡管理 -->
-                <Border Grid.Row="0" Grid.Column="1" Background="#F7F9FC" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="4,0,0,4">
-                    <StackPanel>
-                        <TextBlock Text="均衡管理（4路被动均衡）" Style="{StaticResource SectionTitle}"/>
-                        <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="TogBal1" Content="均衡1" Style="{StaticResource CtrlToggle}" Tag="0" Checked="Bal_Changed" Unchecked="Bal_Changed" AutomationProperties.AutomationId="TogBal1"/>
-                            <ToggleButton x:Name="TogBal2" Content="均衡2" Style="{StaticResource CtrlToggle}" Tag="1" Checked="Bal_Changed" Unchecked="Bal_Changed" AutomationProperties.AutomationId="TogBal2"/>
-                            <ToggleButton x:Name="TogBal3" Content="均衡3" Style="{StaticResource CtrlToggle}" Tag="2" Checked="Bal_Changed" Unchecked="Bal_Changed" AutomationProperties.AutomationId="TogBal3"/>
-                            <ToggleButton x:Name="TogBal4" Content="均衡4" Style="{StaticResource CtrlToggle}" Tag="3" Checked="Bal_Changed" Unchecked="Bal_Changed" AutomationProperties.AutomationId="TogBal4"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                            <TextBlock Text="均衡失效自诊断：" FontSize="10" Foreground="#999"/>
-                            <TextBlock x:Name="TxtBalDiag" Text="正常" FontSize="11" FontWeight="Bold" Foreground="#2FA84F"/>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <!-- 休眠 / 唤醒 -->
-                <Border Grid.Row="1" Grid.Column="0" Background="#F7F9FC" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="0,4,4,0">
-                    <StackPanel>
-                        <TextBlock Text="休眠 / 唤醒" Style="{StaticResource SectionTitle}"/>
-                        <StackPanel Orientation="Horizontal">
-                            <Button Content="浅休眠" Style="{StaticResource CtrlButton}" Background="#7A5AA8" Tag="light" Click="SleepCmd_Click" AutomationProperties.AutomationId="BtnSleepLight"/>
-                            <Button Content="深度休眠" Style="{StaticResource CtrlButton}" Background="#5A3A88" Tag="deep" Click="SleepCmd_Click" AutomationProperties.AutomationId="BtnSleepDeep"/>
-                            <Button Content="CAN 唤醒" Style="{StaticResource CtrlButton}" Background="#2F6FED" Tag="wakecan" Click="SleepCmd_Click" AutomationProperties.AutomationId="BtnWakeCan"/>
-                            <Button Content="低电平唤醒" Style="{StaticResource CtrlButton}" Background="#2F6FED" Tag="wakelow" Click="SleepCmd_Click" AutomationProperties.AutomationId="BtnWakeLow"/>
-                            <Button Content="帮电唤醒" Style="{StaticResource CtrlButton}" Background="#2F6FED" Tag="wakepower" Click="SleepCmd_Click" AutomationProperties.AutomationId="BtnWakePower"/>
-                        </StackPanel>
-                        <TextBlock x:Name="TxtSleepState" Text="当前状态：正常唤醒" FontSize="11" FontWeight="Bold" Foreground="#2FA84F" Margin="0,3,0,0"/>
-                        <TextBlock Text="唤醒方式：CAN唤醒 / 低电平硬线唤醒(接模拟电池GND) / 帮电唤醒" FontSize="10" Foreground="#999" Margin="0,2,0,0"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 通信信息 -->
-                <Border Grid.Row="1" Grid.Column="1" Background="#F7F9FC" BorderBrush="#E3E8F0" BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="4,4,0,0">
-                    <StackPanel>
-                        <TextBlock Text="通信信息" Style="{StaticResource SectionTitle}"/>
-                        <TextBlock Text="CAN：波特率 500k" FontSize="11" Foreground="#444" Margin="0,2,0,0"/>
-                        <TextBlock Text="CANFD：波特率 500k / 2M" FontSize="11" Foreground="#444"/>
-                        <TextBlock Text="LIN：预留（支持LIN通信老化方案）" FontSize="11" Foreground="#444"/>
-                        <TextBlock Text="轮询间隔：由主界面参数设定" FontSize="10" Foreground="#999" Margin="0,3,0,0"/>
-                    </StackPanel>
-                </Border>
-            </Grid>
+        <!-- ===== 本工位所在层：大电流电源 / 高精度电源回采 ===== -->
+        <Border Grid.Row="2" Background="White" BorderBrush="#D5DCE6" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,8,0,0">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                    <TextBlock Text="电源回采" FontSize="12" FontWeight="Bold" Foreground="#1F3864"/>
+                    <TextBlock x:Name="TxtPowerLayer" Text="第 1 层" FontSize="11" Foreground="#7A8699" Margin="10,0,0,0"/>
+                </StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Style="{StaticResource DataCard}" Background="#EAF7F0">
+                        <StackPanel><TextBlock Text="大电流电源 N36190 电压" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtBigV" Text="--" FontSize="16" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
+                    </Border>
+                    <Border Grid.Column="1" Style="{StaticResource DataCard}" Background="#EAF7F0">
+                        <StackPanel><TextBlock Text="大电流电源 N36190 电流" FontSize="11" Foreground="#3E7A54"/><TextBlock x:Name="TxtBigA" Text="--" FontSize="16" FontWeight="Bold" Foreground="#1E7A44" TextAlignment="Center"/></StackPanel>
+                    </Border>
+                    <Border Grid.Column="2" Style="{StaticResource DataCard}" Background="#EAF1FF">
+                        <StackPanel><TextBlock Text="高精度电源 N36620 电压" FontSize="11" Foreground="#5A6B8C"/><TextBlock x:Name="TxtSmallV" Text="--" FontSize="16" FontWeight="Bold" Foreground="#1F3864" TextAlignment="Center"/></StackPanel>
+                    </Border>
+                    <Border Grid.Column="3" Style="{StaticResource DataCard}" Background="#EAF1FF">
+                        <StackPanel><TextBlock Text="高精度电源 N36620 电流" FontSize="11" Foreground="#5A6B8C"/><TextBlock x:Name="TxtSmallA" Text="--" FontSize="16" FontWeight="Bold" Foreground="#1F3864" TextAlignment="Center"/></StackPanel>
+                    </Border>
+                </Grid>
+            </StackPanel>
         </Border>
+
 
         <!-- ===== 本工位 CAN 报文监视（老化、唤醒、UDS 诊断实时收发） ===== -->
         <Border Grid.Row="3" Background="White" BorderBrush="#D5DCE6" BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,8,0,0">

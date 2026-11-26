@@ -15,25 +15,32 @@ namespace AgingTest.Models
     {
         private TcpClient? _tcp;
         private NetworkStream? _ns;
+        private readonly object _sync = new();
 
         public bool IsConnected => _tcp != null && _tcp.Connected && _ns != null;
 
         public void Connect(string ip, int port)
         {
-            if (IsConnected) return;
-            _tcp = new TcpClient();
-            _tcp.Connect(ip, port);
-            _tcp.ReceiveTimeout = 2000;
-            _tcp.SendTimeout = 1000;
-            _ns = _tcp.GetStream();
+            lock (_sync)
+            {
+                if (IsConnected) return;
+                _tcp = new TcpClient();
+                _tcp.Connect(ip, port);
+                _tcp.ReceiveTimeout = 2000;
+                _tcp.SendTimeout = 1000;
+                _ns = _tcp.GetStream();
+            }
         }
 
         public void Disconnect()
         {
-            try { _ns?.Close(); } catch { }
-            try { _tcp?.Close(); } catch { }
-            _ns = null;
-            _tcp = null;
+            lock (_sync)
+            {
+                try { _ns?.Close(); } catch { }
+                try { _tcp?.Close(); } catch { }
+                _ns = null;
+                _tcp = null;
+            }
         }
 
         public void Dispose() => Disconnect();
@@ -41,26 +48,32 @@ namespace AgingTest.Models
         /// <summary>发送写命令（无返回）。</summary>
         public void Send(string cmd)
         {
-            Ensure();
-            var bytes = Encoding.ASCII.GetBytes(cmd + "\n");
-            _ns!.Write(bytes, 0, bytes.Length);
+            lock (_sync)
+            {
+                Ensure();
+                var bytes = Encoding.ASCII.GetBytes(cmd + "\n");
+                _ns!.Write(bytes, 0, bytes.Length);
+            }
         }
 
         /// <summary>发送查询命令并读取一行响应。</summary>
         public string Query(string cmd)
         {
-            Ensure();
-            var bytes = Encoding.ASCII.GetBytes(cmd + "\n");
-            _ns!.Write(bytes, 0, bytes.Length);
-            var sb = new StringBuilder();
-            while (true)
+            lock (_sync)
             {
-                int b = _ns.ReadByte();
-                if (b < 0 || b == '\n') break;
-                if (b == '\r') continue;
-                sb.Append((char)b);
+                Ensure();
+                var bytes = Encoding.ASCII.GetBytes(cmd + "\n");
+                _ns!.Write(bytes, 0, bytes.Length);
+                var sb = new StringBuilder();
+                while (true)
+                {
+                    int b = _ns.ReadByte();
+                    if (b < 0 || b == '\n') break;
+                    if (b == '\r') continue;
+                    sb.Append((char)b);
+                }
+                return sb.ToString();
             }
-            return sb.ToString();
         }
 
         public double QueryDouble(string cmd)

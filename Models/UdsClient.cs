@@ -210,6 +210,20 @@ namespace AgingTest.Models
             return Request(pdu);
         }
 
+        /// <summary>
+        /// 2F DID ControlOption Data：输入输出控制（强控 MOS/BUCK、均衡等）。
+        /// 附录1 中 73BA / 73BB 均为 2F 服务，不是 2E；请求示例 2F 73 BA 03 04 07。
+        /// </summary>
+        public byte[] InputOutputControlByIdentifier(ushort did, byte[] control)
+        {
+            byte[] pdu = new byte[3 + control.Length];
+            pdu[0] = 0x2F;
+            pdu[1] = (byte)(did >> 8);
+            pdu[2] = (byte)did;
+            Array.Copy(control, 0, pdu, 3, control.Length);
+            return Request(pdu);
+        }
+
         // ================================================================
         // 0x31 例程控制
         // ================================================================

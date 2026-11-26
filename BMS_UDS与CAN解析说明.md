@@ -7,7 +7,7 @@
 | 文件 | 作用 |
 |---|---|
 | `Models/IsoTpTransport.cs` | ISO 15765-2 传输层：单帧/首帧/连续帧/流控、CANFD 长单帧（0x00+长度）、0x78 响应挂起 |
-| `Models/UdsClient.cs` | UDS 服务：10/11/14/19/22/27/28/2E/31/3E，负响应异常与 NRC 文本、S3 会话保持 |
+| `Models/UdsClient.cs` | UDS 服务：10/11/14/19/22/27/28/2E/2F/31/3E，负响应异常与 NRC 文本、S3 会话保持 |
 | `Models/BmsDids.cs` | 附录1 全部 DID 常量与解析规则（物理值换算、位域、ASCII、标定数组） |
 | `Models/BmsEolService.cs` | EOL 控制序列：解锁、清 DTC、EEPROM 例程、休眠例程、强控 MOS/BUCK、强控均衡、SOC 标定、电流标定、序列号/硬件版本 |
 | `Models/CanSignalCodec.cs` | 通用 CAN 信号解析：Intel/Motorola 位域、有符号、Factor/Offset、枚举、ASCII |
@@ -26,7 +26,7 @@
 | 响应 ID | `0x77D`（CANFD，标准帧） |
 | 传输层 | ISO-TP，物理寻址；测试端收到首帧回 `30 00 00` |
 | S3 | 5000 ms，超时需重发 `10 03` 并重新解锁 |
-| 前置条件 | 安全访问、例程控制、2E 写入前必须先 `10 03` 进入扩展会话 |
+| 前置条件 | 安全访问、例程控制、2E/2F 写入前必须先 `10 03` 进入扩展会话 |
 
 诊断走哪张卡、哪个通道在 `Config.json` 的 `Comm.Uds` 中配置（默认 `CanIndex=1, Channel=0`）。目标通道必须已由通讯设置页连接并启动。
 
@@ -105,6 +105,19 @@ mgr.Dispose();                              // 停保活、释放全部客户端
 
 `WorkStation` 已新增 `StationNo = (Layer-1)*8 + Column`，可直接作为 `mgr[stationNo]` 的索引；
 也可以 `mgr.FindByWorkStation(layer, column)` 取到对应诊断通道。
+
+## 3.2 老化期间周期报文与停止
+
+| 报文 | 周期 | 启动时机 | 停止时机 |
+|---|---|---|---|
+| 唤醒 `0x400`（8 字节 0，经典 CAN） | **2000ms**（`ChargeTestSetting.WakeRepeatIntervalMs`） | 上电前序电流校验通过、状态进入 `Aging` 后 | `StopAsync` 进入时立即停；启动失败回退时也停 |
+| 会话维持 `3E 80` | 2000ms（`UdsStationManager.StartKeepAlive`） | 首个工位 `10 03` 解锁后 | `738F` 确认 MOS 断开后停；异常停止在 `finally` 关闭 UDS 时也会停 |
+
+- 启动阶段的 `0x400` 仍按 500ms 重发，直到收到 BMS 回复；进入老化后改为每 2s 持续发送。
+- `ChargeTestService` 内部用 `CancellationTokenSource` 管理周期唤醒任务，`StopPeriodicWake` 会取消并等待任务退出。
+- 结束测试、手动停止、启动失败回退、窗口退出都会调用停止逻辑，不会遗留唤醒/会话维持报文。
+
+**强控 MOS/BUCK、强控均衡是 2F 服务，不是 2E**：`2F 73 BA 03 mask 07`、`2F 73 BB 03 mask 0F`；取消强控为 `2F 73 BA 00` / `2F 73 BB 00`。`UdsClient.InputOutputControlByIdentifier` 专门发 2F，`WriteDataByIdentifier` 仍只用于 2E。
 
 ### EOL 控制序列
 

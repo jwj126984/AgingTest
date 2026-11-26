@@ -33,6 +33,8 @@ namespace AgingTest.Models
 
         private UdsStationManager? _udsMgr;
         private int _activeLayer;
+        private CancellationTokenSource? _wakeCts;
+        private Task? _wakeTask;
 
         public ChargeTestState State { get; private set; } = ChargeTestState.Idle;
         public int ActiveLayer => _activeLayer;
@@ -67,12 +69,16 @@ namespace AgingTest.Models
                 {
                     await RunStartSequenceAsync(stations, log);
                     State = ChargeTestState.Aging;
+                    StartPeriodicWake(stations, log);
                     log("===== 上电校验通过，进入老化计时；计时结束后由主界面按逆序关闭 =====");
                 }
                 catch
                 {
                     log("流程异常，执行安全回退……");
-                    await SafeRollbackAsync(log);
+                    try { await SafeRollbackAsync(log); }
+                    catch (Exception rb) { log("安全回退异常：" + rb.Message); }
+                    StopPeriodicWake(null);
+                    CloseUds();
                     _activeStations.Clear();
                     State = ChargeTestState.Failed;
                     throw;
@@ -92,6 +98,9 @@ namespace AgingTest.Models
             await _gate.WaitAsync();
             try
             {
+                // 进入停止流程先停周期唤醒，避免停止 MOS/电源时还在持续唤醒 BMS。
+                StopPeriodicWake(log);
+
                 if (_activeStations.Count == 0)
                 {
                     State = ChargeTestState.Idle;
@@ -109,6 +118,14 @@ namespace AgingTest.Models
                     await EmergencyOffAsync(_activeStations, log);
                     throw new InvalidOperationException("MOS 断开状态无法确认，已紧急关闭电源，请人工检查");
                 }
+
+                // MOS 已确认断开，不再需要诊断会话，立即停止 3E 80 会话维持报文。
+                try
+                {
+                    _udsMgr?.StopKeepAlive();
+                    log("UDS 会话维持报文（3E 80）已停止");
+                }
+                catch (Exception ex) { log("UDS 会话维持停止失败：" + ex.Message); }
 
                 foreach (var st in _activeStations)
                 {
@@ -418,6 +435,8 @@ namespace AgingTest.Models
         // ================================================================
         private async Task SafeRollbackAsync(Action<string> log)
         {
+            // 故障回退第一件事：停掉周期唤醒，避免一边回退一边继续唤醒 BMS。
+            StopPeriodicWake(log);
             if (_uds.Count > 0)
             {
                 foreach (var st in _activeStations)
@@ -523,8 +542,74 @@ namespace AgingTest.Models
             return client;
         }
 
+        /// <summary>老化开始后按固定周期持续发送 0x400 唤醒报文，直到停止/故障回退。</summary>
+        private void StartPeriodicWake(IReadOnlyList<ChargeStationMap> stations, Action<string> log)
+        {
+            StopPeriodicWake(null);
+            if (stations.Count == 0) return;
+
+            int interval = Math.Max(500, _cfg.WakeRepeatIntervalMs);
+            var cts = new CancellationTokenSource();
+            _wakeCts = cts;
+            log($"唤醒报文周期发送已启动：{stations.Count} 个工位，每 {interval}ms 一帧 0x400");
+
+            _wakeTask = Task.Run(async () =>
+            {
+                bool failLogged = false;
+                try
+                {
+                    while (!cts.IsCancellationRequested)
+                    {
+                        foreach (var st in stations)
+                        {
+                            if (cts.IsCancellationRequested) break;
+                            try
+                            {
+                                if (!BmsEolService.SendWakeupFrame(st.CanIndex, st.CanChannel, false) && !failLogged)
+                                {
+                                    log($"   唤醒报文发送失败：CAN{st.CanIndex}/CH{st.CanChannel} 未启动");
+                                    failLogged = true;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                if (!failLogged)
+                                {
+                                    log($"   唤醒报文发送异常：{ex.Message}");
+                                    failLogged = true;
+                                }
+                            }
+                        }
+                        await Task.Delay(interval, cts.Token);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { log("唤醒报文周期发送异常结束：" + ex.Message); }
+                finally { log("唤醒报文周期发送已停止"); }
+            });
+        }
+
+        /// <summary>停止周期唤醒；结束测试、故障回退、窗口退出都必须调用。</summary>
+        private void StopPeriodicWake(Action<string>? log)
+        {
+            var cts = _wakeCts;
+            var task = _wakeTask;
+            _wakeCts = null;
+            _wakeTask = null;
+            if (cts == null) return;
+            try { cts.Cancel(); } catch { }
+            try
+            {
+                if (task != null && !task.Wait(1000))
+                    log?.Invoke("唤醒报文停止等待超时（可能还有最后一帧在发送）");
+            }
+            catch { }
+            try { cts.Dispose(); } catch { }
+        }
+
         private void CloseUds()
         {
+            StopPeriodicWake(null);
             try { _udsMgr?.StopKeepAlive(); } catch { }
             try { _udsMgr?.CloseAll(); } catch { }
             _udsMgr = null;

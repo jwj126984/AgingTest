@@ -128,12 +128,12 @@ namespace AgingTest.Models
             if (!dischargeMosClosed) mask |= 0x02;
             if (!buckClosed) mask |= 0x04;
 
-            uds.WriteDataByIdentifier(BmsDids.StrongMosBuck, new byte[] { 0x03, mask, 0x07 });
+            uds.InputOutputControlByIdentifier(BmsDids.StrongMosBuck, new byte[] { 0x03, mask, 0x07 });
         }
 
         /// <summary>2F 73 BA 00：取消强控（交回 BMS 自控）。</summary>
         public static void CancelStrongMosBuck(UdsClient uds)
-            => uds.WriteDataByIdentifier(BmsDids.StrongMosBuck, new byte[] { 0x00 });
+            => uds.InputOutputControlByIdentifier(BmsDids.StrongMosBuck, new byte[] { 0x00 });
 
         // ================================================================
         // 强控：均衡（DID 0x73BB）
@@ -145,12 +145,12 @@ namespace AgingTest.Models
         public static void StrongControlBalance(UdsClient uds, int cellMask)
         {
             byte mask = (byte)(cellMask & 0x0F);
-            uds.WriteDataByIdentifier(BmsDids.StrongBalance, new byte[] { 0x03, mask, 0x0F });
+            uds.InputOutputControlByIdentifier(BmsDids.StrongBalance, new byte[] { 0x03, mask, 0x0F });
         }
 
         /// <summary>2F 73 BB 00：取消强控均衡。</summary>
         public static void CancelStrongBalance(UdsClient uds)
-            => uds.WriteDataByIdentifier(BmsDids.StrongBalance, new byte[] { 0x00 });
+            => uds.InputOutputControlByIdentifier(BmsDids.StrongBalance, new byte[] { 0x00 });
 
         // ================================================================
         // SOC 标定（31 01 74 10 xx）

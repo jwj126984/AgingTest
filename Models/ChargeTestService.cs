@@ -245,6 +245,7 @@ namespace AgingTest.Models
                         (ushort)(ohms & 0xFFFF)
                     });
                 }
+                await Task.Delay(200, ct);
                 log($"   工位{st.Station.Code} → 电阻 485-{st.ResistorPort}/地址{st.ResistorAddr} {st.TempChannelText} = {ohms}Ω");
             }
 
@@ -272,6 +273,7 @@ namespace AgingTest.Models
                 var uds = EnsureUds(st, log);
                 BmsEolService.StrongControlMosBuck(uds, true, true, false);
                 log($"   工位{st.Station.Code} → MOS 强控闭合命令已发送");
+                await Task.Delay(100, ct);
             }
             await Task.Delay(300, ct);
 

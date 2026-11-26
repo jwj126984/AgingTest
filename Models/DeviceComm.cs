@@ -30,6 +30,9 @@ namespace AgingTest.Models
         public const int N36100Count = 6;        // 大电流电源台数
         public const int N36600Count = 6;        // 高精度电源台数
 
+        private static readonly object OvenAgingSync = new();
+        private static int _ovenAgingUsers;      // 共用同一台烘箱的老化层数量
+
         private static readonly string ConfigPath = Path.Combine(Environment.CurrentDirectory, "Config.json");
         private static readonly JsonSerializerOptions JsonOpt = new() { WriteIndented = true };
 
@@ -389,8 +392,78 @@ namespace AgingTest.Models
 
         public static void DisconnectOven()
         {
+            // 先清引用计数，再断开 TCP，避免与 StartOvenForAging/StopOvenForAging 形成锁顺序反转。
+            lock (OvenAgingSync) _ovenAgingUsers = 0;
             try { Oven.Client.Disconnect(); } catch { }
             RaiseStateChanged();
+        }
+
+        /// <summary>
+        /// 老化启动时申请烘箱：多工位可能分多层启动，但物理上只有一台烘箱。
+        /// 第一层真正下发设定并启动，后续层只增加引用计数，避免重复写 8010/线圈导致设备端断链。
+        /// </summary>
+        public static void StartOvenForAging(double temperature, double humidity, Action<string> log)
+        {
+            lock (OvenAgingSync)
+            {
+                if (!Oven.Connected)
+                {
+                    var err = ConnectOven();
+                    if (err != null) throw new InvalidOperationException(err);
+                }
+
+                var oven = Oven.Client;
+                if (_ovenAgingUsers > 0)
+                {
+                    _ovenAgingUsers++;
+                    log($"   烘箱已由其它工位启动，共用运行（引用 {_ovenAgingUsers} 层）");
+                    return;
+                }
+
+                oven.SetControlType(false);
+                oven.SetOperationMode(false);
+                oven.SetTemperature(temperature);
+                oven.SetHumidity(humidity);
+                oven.Start();
+                _ovenAgingUsers = 1;
+                log($"   烘箱：温度 {temperature:0.0}℃，湿度 {humidity:0.0}%，已启动");
+            }
+        }
+
+        /// <summary>
+        /// 老化停止时释放烘箱：引用计数归零才真正停止。
+        /// stopWhenLast=false 时保留烘箱运行（用于只停测试不停烘箱的场景）。
+        /// </summary>
+        public static void StopOvenForAging(bool stopWhenLast, Action<string> log)
+        {
+            lock (OvenAgingSync)
+            {
+                if (_ovenAgingUsers <= 0) return;
+                _ovenAgingUsers--;
+
+                if (_ovenAgingUsers > 0)
+                {
+                    log($"   烘箱仍由其它工位使用，保持运行（剩余 {_ovenAgingUsers} 层）");
+                    return;
+                }
+
+                if (!stopWhenLast)
+                {
+                    log("   烘箱保留运行，未执行停止");
+                    return;
+                }
+
+                if (!Oven.Connected)
+                {
+                    var err = ConnectOven();
+                    if (err != null) throw new InvalidOperationException(err);
+                }
+
+                var (ok, msg) = Oven.Client.StopAndVerify();
+                if (!ok)
+                    throw new InvalidOperationException($"烘箱停止失败：{msg}");
+                log("   烘箱已停止");
+            }
         }
 
         // ================================================================

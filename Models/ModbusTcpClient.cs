@@ -16,6 +16,10 @@ namespace AgingTest.Models
         private NetworkStream? _ns;
         private ushort _tid;
         private readonly object _sync = new object();
+        private string? _lastIp;
+        private int _lastPort;
+        private byte _lastUnitId;
+        private bool _manualClose;
 
         /// <summary>从站地址（设备地址码），默认 1。</summary>
         public byte UnitId { get; set; } = 1;
@@ -23,24 +27,64 @@ namespace AgingTest.Models
         /// <summary>读写超时（毫秒）。</summary>
         public int TimeoutMs { get; set; } = 2000;
 
-        public bool IsOpen => _tcp is { Connected: true } && _ns != null;
+        public bool IsOpen
+        {
+            get
+            {
+                if (_tcp is not { Connected: true } || _ns == null) return false;
+                try
+                {
+                    // TcpClient.Connected 可能是过期状态：远端关闭后 Poll 读到 0 字节即判定断开。
+                    if (_tcp.Client.Poll(0, SelectMode.SelectRead) && _tcp.Client.Available == 0)
+                        return false;
+                }
+                catch { return false; }
+                return true;
+            }
+        }
 
         public void Open(string ip, int port, byte unitId)
         {
-            Close();
+            lock (_sync)
+            {
+                CloseCore();
+                _lastIp = ip;
+                _lastPort = port;
+                _lastUnitId = unitId;
+                _manualClose = false;
+                OpenCore(ip, port, unitId);
+            }
+        }
+
+        private void OpenCore(string ip, int port, byte unitId)
+        {
             var tcp = new TcpClient
             {
                 ReceiveTimeout = TimeoutMs,
                 SendTimeout = 1000,
                 NoDelay = true
             };
-            tcp.Connect(ip, port);
-            _tcp = tcp;
-            _ns = tcp.GetStream();
-            UnitId = unitId;
+            try
+            {
+                tcp.Connect(ip, port);
+                _tcp = tcp;
+                _ns = tcp.GetStream();
+                UnitId = unitId;
+            }
+            catch
+            {
+                try { tcp.Close(); } catch { }
+                throw;
+            }
         }
 
         public void Close()
+        {
+            _manualClose = true;
+            lock (_sync) CloseCore();
+        }
+
+        private void CloseCore()
         {
             try { _ns?.Close(); } catch { }
             try { _tcp?.Close(); } catch { }
@@ -128,6 +172,21 @@ namespace AgingTest.Models
 
         private byte[] Transact(byte[] pdu)
         {
+            try
+            {
+                return TransactOnce(pdu);
+            }
+            catch (Exception ex) when (IsRetryable(ex) && !_manualClose && !string.IsNullOrWhiteSpace(_lastIp))
+            {
+                // 多工位长时间运行时，烘箱 TCP 可能被设备端主动断开或残留半帧；
+                // 关闭旧 socket 后按原 IP/端口/站号重连一次，避免整个老化流程因一次断链失败。
+                if (!TryReconnect()) throw;
+                return TransactOnce(pdu);
+            }
+        }
+
+        private byte[] TransactOnce(byte[] pdu)
+        {
             lock (_sync)
             {
                 if (!IsOpen || _ns == null) throw new InvalidOperationException("Modbus TCP 未连接");
@@ -170,6 +229,35 @@ namespace AgingTest.Models
                 Array.Copy(body, 1, respPdu, 0, respPdu.Length);
                 return respPdu;
             }
+        }
+
+        private bool TryReconnect()
+        {
+            if (_manualClose || string.IsNullOrWhiteSpace(_lastIp)) return false;
+            lock (_sync)
+            {
+                try
+                {
+                    CloseCore();
+                    OpenCore(_lastIp, _lastPort, _lastUnitId);
+                    return true;
+                }
+                catch
+                {
+                    CloseCore();
+                    return false;
+                }
+            }
+        }
+
+        private static bool IsRetryable(Exception ex)
+        {
+            if (ex is InvalidOperationException) return true;
+            if (ex is SocketException) return true;
+            // Modbus 异常响应（非法地址/值/忙）不能靠重连解决，直接抛给业务层。
+            if (ex is IOException io)
+                return !io.Message.StartsWith("Modbus 异常响应", StringComparison.Ordinal);
+            return false;
         }
 
         private byte[] ReadExactly(int count)

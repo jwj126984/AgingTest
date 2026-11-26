@@ -35,6 +35,7 @@ namespace AgingTest.Models
         private int _activeLayer;
         private CancellationTokenSource? _wakeCts;
         private Task? _wakeTask;
+        private bool _ovenAcquired;
 
         public ChargeTestState State { get; private set; } = ChargeTestState.Idle;
         public int ActiveLayer => _activeLayer;
@@ -62,6 +63,7 @@ namespace AgingTest.Models
                 _activeLayer = layer;
                 _activeStations.Clear();
                 _activeStations.AddRange(stations);
+                _ovenAcquired = false;
                 State = ChargeTestState.Starting;
                 log($"===== 老化测试充电流程开始：第 {layer} 层，{stations.Count} 个工位 =====");
 
@@ -148,14 +150,13 @@ namespace AgingTest.Models
 
                 SetIndicator(_activeStations, false, log);
 
-                if (_cfg.OvenEnabled && _cfg.StopOvenOnFinish && DeviceComm.Oven.Connected)
+                if (_ovenAcquired)
                 {
+                    _ovenAcquired = false;
                     try
                     {
-                        var result = DeviceComm.Oven.Client.StopAndVerify();
-                        if (!result.ok)
-                            throw new InvalidOperationException(result.message);
-                        log("烘箱：" + result.message);
+                        // 同一台烘箱由多层共用：引用计数归零才真正停止；断链时 Modbus 层会自动重连。
+                        DeviceComm.StopOvenForAging(_cfg.StopOvenOnFinish, log);
                     }
                     catch (Exception ex)
                     {
@@ -310,18 +311,12 @@ namespace AgingTest.Models
 
             log("   电流校验通过");
 
-            // 11. 烘箱设定温度/湿度并启动
+            // 11. 烘箱设定温度/湿度并启动（同一台烘箱由多层共用，只在第一层真正启动）
             if (_cfg.OvenEnabled)
             {
-                if (!DeviceComm.Oven.Connected)
-                    throw new InvalidOperationException("烘箱控制器未连接");
-                var oven = DeviceComm.Oven.Client;
-                oven.SetControlType(false);
-                oven.SetOperationMode(false);
-                oven.SetTemperature(_cfg.OvenTemperature);
-                oven.SetHumidity(_cfg.OvenHumidity);
-                oven.Start();
-                log($"⑩ 烘箱：温度 {_cfg.OvenTemperature:0.0}℃，湿度 {_cfg.OvenHumidity:0.0}%，已启动");
+                DeviceComm.StartOvenForAging(_cfg.OvenTemperature, _cfg.OvenHumidity, log);
+                _ovenAcquired = true;
+                log($"⑩ 烘箱：温度 {_cfg.OvenTemperature:0.0}℃，湿度 {_cfg.OvenHumidity:0.0}%");
             }
             else
             {
@@ -461,6 +456,14 @@ namespace AgingTest.Models
                 }
             }
             await EmergencyOffAsync(_activeStations, log);
+
+            // 启动阶段失败回退：释放本层对共用烘箱的引用，引用归零时停止烘箱。
+            if (_ovenAcquired)
+            {
+                _ovenAcquired = false;
+                try { DeviceComm.StopOvenForAging(true, log); }
+                catch (Exception ex) { log("回退时停止烘箱失败：" + ex.Message); }
+            }
         }
 
         private async Task EmergencyOffAsync(IReadOnlyList<ChargeStationMap> stations, Action<string> log)

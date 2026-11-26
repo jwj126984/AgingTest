@@ -74,7 +74,7 @@ namespace AgingTest.Models
         public double SmallCurrentMaxA { get; set; } = 0.5;
 
         // 上电稳定与采样
-        public int CurrentCheckDelayMs { get; set; } = 3000;
+        public int CurrentCheckDelayMs { get; set; } = 10000;
         public int CurrentCheckSamples { get; set; } = 5;
         public int CurrentCheckIntervalMs { get; set; } = 200;
 

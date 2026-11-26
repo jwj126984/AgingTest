@@ -252,7 +252,7 @@ namespace AgingTest.Models
             foreach (var st in stations)
             {
                 var uds = EnsureUds(st, log);
-                BmsEolService.StrongControlMosBuck(uds, true, true, true);
+                BmsEolService.StrongControlMosBuck(uds, true, true, false);
                 log($"   工位{st.Station.Code} → MOS 强控闭合命令已发送");
             }
             await Task.Delay(300, ct);

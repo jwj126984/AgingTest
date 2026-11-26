@@ -858,9 +858,11 @@ namespace AgingTest
 
         internal void AddLog(string msg)
         {
-            LogList.Items.Insert(0, $"{DateTime.Now:HH:mm:ss}  {msg}");
-            while (LogList.Items.Count > 200)
-                LogList.Items.RemoveAt(LogList.Items.Count - 1);
+            this.Dispatcher.Invoke(() => {
+                LogList.Items.Insert(0, $"{DateTime.Now:HH:mm:ss}  {msg}");
+                while (LogList.Items.Count > 200)
+                    LogList.Items.RemoveAt(LogList.Items.Count - 1);
+            });
         }
 
         private void RefreshStats()
